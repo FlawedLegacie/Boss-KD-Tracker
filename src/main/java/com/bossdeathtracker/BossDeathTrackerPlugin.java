@@ -13,22 +13,16 @@ import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
-import net.runelite.api.ScriptID;
 import net.runelite.api.events.ActorDeath;
-import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcSpawned;
-import net.runelite.client.callback.ClientThread;
-import net.runelite.client.chat.ChatColorType;
 import net.runelite.client.chat.ChatCommandManager;
-import net.runelite.client.chat.ChatMessageBuilder;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ChatInput;
-import net.runelite.client.events.ChatboxInput;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -59,9 +53,6 @@ public class BossDeathTrackerPlugin extends Plugin
     private ChatCommandManager chatCommandManager;
 
     @Inject
-    private ClientThread clientThread;
-
-    @Inject
     private BossDeathTrackerStore store;
 
     @Inject
@@ -77,8 +68,6 @@ public class BossDeathTrackerPlugin extends Plugin
     private NavigationButton navigationButton;
     private int gameTickCounter;
     private String lastPanelActiveBossId;
-    private String pendingKdDisplayMessage;
-
 
     @Override
     protected void startUp()
@@ -132,7 +121,6 @@ public class BossDeathTrackerPlugin extends Plugin
     protected void shutDown()
     {
         chatCommandManager.unregisterCommand(KD_COMMAND);
-        pendingKdDisplayMessage = null;
         encounterTracker.reset();
 
         if (navigationButton != null)
@@ -250,37 +238,6 @@ public class BossDeathTrackerPlugin extends Plugin
 
             syncEncounterToPanel();
         }
-    }
-
-    @Subscribe
-    public void onChatMessage(ChatMessage event)
-    {
-        if (pendingKdDisplayMessage == null
-            || !pendingKdDisplayMessage.equals(event.getMessage()))
-        {
-            return;
-        }
-
-        switch (event.getType())
-        {
-            case PUBLICCHAT:
-            case MODCHAT:
-            case FRIENDSCHAT:
-            case CLAN_CHAT:
-            case CLAN_GUEST_CHAT:
-            case CLAN_GIM_CHAT:
-                break;
-            default:
-                return;
-        }
-
-        String formatted = new ChatMessageBuilder()
-            .append(ChatColorType.NORMAL)
-            .append(event.getMessage())
-            .build();
-
-        event.getMessageNode().setRuneLiteFormatMessage(formatted);
-        pendingKdDisplayMessage = null;
     }
 
     @Subscribe
@@ -438,46 +395,9 @@ public class BossDeathTrackerPlugin extends Plugin
                 + " - Kills: " + kills
                 + " | Deaths: " + deaths;
 
-        // Consume !KD itself so the command is never sent to the game.
-        // Then send the formatted result through RuneLite's normal CHAT_SEND
-        // script as public game chat so nearby players can see it.
-        if (chatInput instanceof ChatboxInput)
-        {
-            pendingKdDisplayMessage = result;
-
-            ChatboxInput chatboxInput = (ChatboxInput) chatInput;
-            int chatType = chatboxInput.getChatType();
-
-            // RuneLite's ChatInputManager passes both chatType and clanTarget
-            // to ScriptID.CHAT_SEND. Clan/guest-clan messages need the target
-            // value from the current script stack; using -1 can suppress the
-            // outgoing message.
-            int clanTarget = -1;
-            int intStackSize = client.getIntStackSize();
-            int[] intStack = client.getIntStack();
-
-            if (intStack != null && intStackSize > 0)
-            {
-                clanTarget = intStack[intStackSize - 1];
-            }
-
-            final int outgoingChatType = chatType;
-            final int outgoingClanTarget = clanTarget;
-
-            clientThread.invokeLater(() ->
-                client.runScript(
-                    ScriptID.CHAT_SEND,
-                    result,
-                    outgoingChatType,
-                    outgoingClanTarget,
-                    0,
-                    -1));
-
-            return true;
-        }
-
-        // Fallback for non-chatbox contexts: show it locally rather than
-        // accidentally sending to an unexpected channel.
+        // Consume !KD so the command itself is never sent to the game.
+        // Plugin Hub plugins may not invoke ScriptID.CHAT_SEND directly, so
+        // display the result locally as a normal RuneLite game message.
         client.addChatMessage(
             ChatMessageType.GAMEMESSAGE,
             "",
