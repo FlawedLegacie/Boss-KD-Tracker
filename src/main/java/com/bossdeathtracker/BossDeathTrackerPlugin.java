@@ -13,20 +13,16 @@ import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
-import net.runelite.api.ScriptID;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcSpawned;
-import net.runelite.api.gameval.VarClientID;
-import net.runelite.client.callback.ClientThread;
 import net.runelite.client.chat.ChatCommandManager;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ChatInput;
-import net.runelite.client.events.ChatboxInput;
 import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
@@ -55,9 +51,6 @@ public class BossDeathTrackerPlugin extends Plugin
 
     @Inject
     private ChatCommandManager chatCommandManager;
-
-    @Inject
-    private ClientThread clientThread;
 
     @Inject
     private BossDeathTrackerStore store;
@@ -402,24 +395,8 @@ public class BossDeathTrackerPlugin extends Plugin
                 + " - Kills: " + kills
                 + " | Deaths: " + deaths;
 
-        // Plugin Hub-safe sharing: consume !KD, refill the normal chatbox with
-        // the formatted result, and leave the actual send to the player.
-        if (chatInput instanceof ChatboxInput)
-        {
-            ChatboxInput chatboxInput = (ChatboxInput) chatInput;
-            String shareText = withChannelPrefix(result, chatboxInput.getChatType());
-
-            clientThread.invokeLater(() ->
-            {
-                client.setVarcStrValue(VarClientID.CHATINPUT, shareText);
-                client.runScript(ScriptID.CHAT_PROMPT_INIT);
-            });
-
-            return true;
-        }
-
-        // Non-chatbox contexts stay local rather than redirecting the result
-        // into an unexpected channel.
+        // The player manually enters !KD. Consume that command and render the
+        // result locally; never populate, rewrite, or automatically send chat.
         client.addChatMessage(
             ChatMessageType.GAMEMESSAGE,
             "",
@@ -427,22 +404,6 @@ public class BossDeathTrackerPlugin extends Plugin
             null);
 
         return true;
-    }
-
-    private static String withChannelPrefix(String message, int chatType)
-    {
-        switch (chatType)
-        {
-            case 2:
-                return "/" + message;
-            case 3:
-                return "//" + message;
-            case 4:
-                return "///" + message;
-            case 0:
-            default:
-                return message;
-        }
     }
 
     private void syncEncounterToPanel()
