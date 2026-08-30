@@ -349,51 +349,55 @@ public class BossDeathTrackerPlugin extends Plugin
             return true;
         }
 
-        List<BossProfile> matches = store.searchBosses(query);
-        BossProfile selected = null;
+        List<BossProfile> matches =
+            BossNameResolver.resolve(query, store.getBosses());
 
-        for (BossProfile boss : matches)
+        if (matches.isEmpty())
         {
-            if (boss.getDisplayName().equalsIgnoreCase(query))
-            {
-                selected = boss;
-                break;
-            }
+            client.addChatMessage(
+                ChatMessageType.GAMEMESSAGE,
+                "",
+                "Boss KD Tracker: Boss not found.",
+                null);
+            return true;
         }
 
-        if (selected == null)
+        if (matches.size() > 1)
         {
-            if (matches.size() == 1)
+            StringBuilder names = new StringBuilder();
+            int shown = Math.min(4, matches.size());
+
+            for (int i = 0; i < shown; i++)
             {
-                selected = matches.get(0);
+                if (i > 0)
+                {
+                    names.append(", ");
+                }
+                names.append(BossNameResolver.chatDisplayName(matches.get(i)));
             }
-            else if (matches.isEmpty())
+
+            if (matches.size() > shown)
             {
-                client.addChatMessage(
-                    ChatMessageType.GAMEMESSAGE,
-                    "",
-                    "Boss KD Tracker: Boss not found.",
-                    null);
-                return true;
+                names.append(", ...");
             }
-            else
-            {
-                client.addChatMessage(
-                    ChatMessageType.GAMEMESSAGE,
-                    "",
-                    "Boss KD Tracker: Multiple boss matches found.",
-                    null);
-                return true;
-            }
+
+            client.addChatMessage(
+                ChatMessageType.GAMEMESSAGE,
+                "",
+                "Boss KD Tracker: Multiple matches: " + names,
+                null);
+            return true;
         }
 
+        BossProfile selected = matches.get(0);
         int kills = store.getKillCount(selected.getId());
         int deaths = store.getDeathCount(selected.getId());
 
         String result =
-            selected.getDisplayName()
+            BossNameResolver.chatDisplayName(selected)
                 + " - Kills: " + kills
-                + " | Deaths: " + deaths;
+                + " | Deaths: " + deaths
+                + " | K/D: " + BossNameResolver.formatKdRatio(kills, deaths);
 
         // The player manually enters !KD. Consume that command and render the
         // result locally; never populate, rewrite, or automatically send chat.
