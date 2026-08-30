@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
 public class BossDeathTrackerPlugin extends Plugin
 {
     private static final String KD_COMMAND = "!KD";
+    private static final int RECENT_BOSS_CONTEXT_TICKS = 100;
 
     private static final Logger log =
         LoggerFactory.getLogger(BossDeathTrackerPlugin.class);
@@ -68,12 +69,16 @@ public class BossDeathTrackerPlugin extends Plugin
     private NavigationButton navigationButton;
     private int gameTickCounter;
     private String lastPanelActiveBossId;
+    private String recentBossId;
+    private int recentBossTick = -1;
 
     @Override
     protected void startUp()
     {
         encounterTracker.reset();
         gameTickCounter = 0;
+        recentBossId = null;
+        recentBossTick = -1;
 
         panel = new BossDeathTrackerPanel(store, config, configManager);
 
@@ -122,6 +127,8 @@ public class BossDeathTrackerPlugin extends Plugin
     {
         chatCommandManager.unregisterCommand(KD_COMMAND);
         encounterTracker.reset();
+        recentBossId = null;
+        recentBossTick = -1;
 
         if (navigationButton != null)
         {
@@ -362,34 +369,44 @@ public class BossDeathTrackerPlugin extends Plugin
             return true;
         }
 
-        if (matches.size() > 1)
+        BossProfile selected;
+
+        if (matches.size() == 1)
         {
-            StringBuilder names = new StringBuilder();
-            int shown = Math.min(4, matches.size());
+            selected = matches.get(0);
+        }
+        else
+        {
+            selected = resolveContextualMatch(matches);
 
-            for (int i = 0; i < shown; i++)
+            if (selected == null)
             {
-                if (i > 0)
+                StringBuilder names = new StringBuilder();
+                int shown = Math.min(4, matches.size());
+
+                for (int i = 0; i < shown; i++)
                 {
-                    names.append(", ");
+                    if (i > 0)
+                    {
+                        names.append(", ");
+                    }
+                    names.append(BossNameResolver.chatDisplayName(matches.get(i)));
                 }
-                names.append(BossNameResolver.chatDisplayName(matches.get(i)));
-            }
 
-            if (matches.size() > shown)
-            {
-                names.append(", ...");
-            }
+                if (matches.size() > shown)
+                {
+                    names.append(", ...");
+                }
 
-            client.addChatMessage(
-                ChatMessageType.GAMEMESSAGE,
-                "",
-                "Boss KD Tracker: Multiple matches: " + names,
-                null);
-            return true;
+                client.addChatMessage(
+                    ChatMessageType.GAMEMESSAGE,
+                    "",
+                    "Boss KD Tracker: Multiple matches: " + names,
+                    null);
+                return true;
+            }
         }
 
-        BossProfile selected = matches.get(0);
         int kills = store.getKillCount(selected.getId());
         int deaths = store.getDeathCount(selected.getId());
 
@@ -410,9 +427,57 @@ public class BossDeathTrackerPlugin extends Plugin
         return true;
     }
 
+    private BossProfile resolveContextualMatch(List<BossProfile> matches)
+    {
+        String activeBossId = encounterTracker.getActiveBossId();
+        BossProfile activeMatch = findMatchById(matches, activeBossId);
+
+        if (activeMatch != null)
+        {
+            return activeMatch;
+        }
+
+        if (recentBossId != null
+            && recentBossTick >= 0
+            && gameTickCounter - recentBossTick <= RECENT_BOSS_CONTEXT_TICKS)
+        {
+            return findMatchById(matches, recentBossId);
+        }
+
+        return null;
+    }
+
+    private static BossProfile findMatchById(
+        List<BossProfile> matches,
+        String bossId)
+    {
+        if (bossId == null)
+        {
+            return null;
+        }
+
+        for (BossProfile boss : matches)
+        {
+            if (bossId.equals(boss.getId()))
+            {
+                return boss;
+            }
+        }
+
+        return null;
+    }
+
     private void syncEncounterToPanel()
     {
         String activeBossId = encounterTracker.getActiveBossId();
+
+        // Remember the live encounter continuously, so an ambiguous shorthand
+        // can still resolve for a short window immediately after the fight.
+        if (activeBossId != null)
+        {
+            recentBossId = activeBossId;
+            recentBossTick = gameTickCounter;
+        }
 
         if (!java.util.Objects.equals(lastPanelActiveBossId, activeBossId))
         {
@@ -448,6 +513,8 @@ public class BossDeathTrackerPlugin extends Plugin
             || state == GameState.CONNECTION_LOST)
         {
             encounterTracker.reset();
+            recentBossId = null;
+            recentBossTick = -1;
             syncEncounterToPanel();
         }
     }
