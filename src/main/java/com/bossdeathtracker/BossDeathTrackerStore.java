@@ -284,19 +284,26 @@ public class BossDeathTrackerStore
 
         for (BossProfile boss : data.getBosses())
         {
-            String bossName = boss.getDisplayName();
+            Integer cachedKc = null;
+            String matchedKey = null;
 
-            if (bossName == null || bossName.trim().isEmpty())
+            for (String killcountKey : BossNameResolver.runeLiteKillcountKeys(boss))
             {
-                continue;
+                Integer candidate = configManager.getRSProfileConfiguration(
+                    "killcount",
+                    killcountKey,
+                    int.class);
+
+                if (candidate != null
+                    && candidate >= 0
+                    && (cachedKc == null || candidate > cachedKc))
+                {
+                    cachedKc = candidate;
+                    matchedKey = killcountKey;
+                }
             }
 
-            Integer cachedKc = configManager.getRSProfileConfiguration(
-                "killcount",
-                bossName.toLowerCase(Locale.ROOT),
-                int.class);
-
-            if (cachedKc == null || cachedKc < 0)
+            if (cachedKc == null)
             {
                 continue;
             }
@@ -319,7 +326,9 @@ public class BossDeathTrackerStore
                     TrackerEventSource.IMPORTED,
                     delta,
                     "Historical KC synchronized from RuneLite killcount cache; reported KC: "
-                        + cachedKc));
+                        + cachedKc
+                        + "; cache key: "
+                        + matchedKey));
 
                 bossesUpdated++;
                 killsImported += delta;
