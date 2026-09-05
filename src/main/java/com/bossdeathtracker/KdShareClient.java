@@ -164,12 +164,16 @@ final class KdShareClient
             return null;
         }
 
-        HttpUrl url = HttpUrl.parse(value.trim());
-        if (url == null || !"https".equalsIgnoreCase(url.scheme()))
+        final HttpUrl url;
+        try
+        {
+            url = HttpUrl.get(value.trim());
+        }
+        catch (IllegalArgumentException exception)
         {
             return null;
         }
 
-        return url;
+        return "https".equalsIgnoreCase(url.scheme()) ? url : null;
     }
 }
