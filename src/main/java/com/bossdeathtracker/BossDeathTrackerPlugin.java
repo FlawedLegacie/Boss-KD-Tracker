@@ -22,7 +22,11 @@ import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcSpawned;
 import net.runelite.client.callback.ClientThread;
+import net.runelite.client.chat.ChatColorType;
 import net.runelite.client.chat.ChatCommandManager;
+import net.runelite.client.chat.ChatMessageBuilder;
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ChatInput;
@@ -59,6 +63,9 @@ public class BossDeathTrackerPlugin extends Plugin
 
     @Inject
     private ChatCommandManager chatCommandManager;
+
+    @Inject
+    private ChatMessageManager chatMessageManager;
 
     @Inject
     private BossDeathTrackerStore store;
@@ -574,10 +581,22 @@ public class BossDeathTrackerPlugin extends Plugin
         int kills,
         int deaths)
     {
-        return bossName
-            + " - Kills: " + kills
-            + " | Deaths: " + deaths
-            + " | K/D: " + BossNameResolver.formatKdRatio(kills, deaths);
+        return new ChatMessageBuilder()
+            .append(ChatColorType.HIGHLIGHT)
+            .append(bossName)
+            .append(ChatColorType.NORMAL)
+            .append(" - Kills: ")
+            .append(ChatColorType.HIGHLIGHT)
+            .append(Integer.toString(kills))
+            .append(ChatColorType.NORMAL)
+            .append(" | Deaths: ")
+            .append(ChatColorType.HIGHLIGHT)
+            .append(Integer.toString(deaths))
+            .append(ChatColorType.NORMAL)
+            .append(" | K/D: ")
+            .append(ChatColorType.HIGHLIGHT)
+            .append(BossNameResolver.formatKdRatio(kills, deaths))
+            .build();
     }
 
     private static String formatMatchNames(List<BossProfile> matches)
@@ -604,11 +623,11 @@ public class BossDeathTrackerPlugin extends Plugin
 
     private void addGameMessage(String message)
     {
-        client.addChatMessage(
-            ChatMessageType.GAMEMESSAGE,
-            "",
-            message,
-            null);
+        chatMessageManager.queue(
+            QueuedMessage.builder()
+                .type(ChatMessageType.CONSOLE)
+                .runeLiteFormattedMessage(message)
+                .build());
     }
 
     private BossProfile resolveContextualMatch(List<BossProfile> matches)
