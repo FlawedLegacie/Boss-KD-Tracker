@@ -8,7 +8,7 @@ Boss KD Tracker is a RuneLite plugin for tracking boss kills, deaths, K/D ratios
 - Automatic boss kill detection
 - Historical kill-count synchronization from RuneLite profile data
 - Manual `+ Death` and `+ Kill` corrections
-- `!KD <boss>` chat command
+- Local-only `!KD <boss>` chat command with boss-name shortcuts
 - Current, Nemesis, and Records summary views
 - Searchable boss catalog with built-in NPC IDs and multi-form boss support
 - Manual boss creation for new or unsupported bosses
@@ -22,6 +22,34 @@ Historical deaths are not guessed. Boss KD Tracker records deaths that it observ
 ## Kill synchronization
 
 Boss KD Tracker can import historical boss kill counts already known to RuneLite. Synchronization is idempotent: it only adds a missing difference and never lowers a higher total already recorded by the tracker.
+
+## Local !KD command
+
+Type `!KD <boss>` (for example, `!kd whisp`) to display your tracked statistics:
+
+```text
+Whisperer - Kills: 100 | Deaths: 5 | K/D: 20.00
+```
+
+The result is visible only on your own client. RuneLite's `ChatCommandManager`
+consumes the command, and `ChatMessageManager` queues the formatted local result.
+Neither the command nor the result is sent to other players. The plugin does not
+insert text into the chatbox, resume sending the command, or call chat-send scripts.
+There is no sharing server, network upload, or sharing setting.
+
+Boss names and values use RuneLite's highlight colors. Shortcuts such as `whisp`,
+`bandos`, and `vork` are supported. Ambiguous names use the active encounter or a
+recent matching encounter (about 60 seconds); otherwise the command lists matches.
+Zero deaths displays `Perfect` when there are kills, or `0.00` when both are zero.
+
+## Future sharing hooks
+
+The command includes disabled submit and lookup hooks for a future reviewed sharing
+implementation. They always fall back to local output and ignore incoming commands.
+There is no service, network transport, hidden toggle, or automatic activation.
+Approval of this local-only release does not activate sharing. Enabling it requires
+a separate code change and release, an agreed backend, opt-in/privacy handling,
+and end-to-end tests. See [the hook contract](KD_SHARING_HOOKS.md).
 
 ## Development
 
