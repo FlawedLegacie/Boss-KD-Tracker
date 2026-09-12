@@ -11,17 +11,14 @@ import javax.swing.SwingUtilities;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.MessageNode;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
 import net.runelite.api.events.ActorDeath;
-import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.InteractingChanged;
 import net.runelite.api.events.NpcChanged;
 import net.runelite.api.events.NpcSpawned;
-import net.runelite.client.callback.ClientThread;
 import net.runelite.client.chat.ChatColorType;
 import net.runelite.client.chat.ChatCommandManager;
 import net.runelite.client.chat.ChatMessageBuilder;
@@ -35,7 +32,6 @@ import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
-import net.runelite.client.util.Text;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,9 +52,6 @@ public class BossDeathTrackerPlugin extends Plugin
     private Client client;
 
     @Inject
-    private ClientThread clientThread;
-
-    @Inject
     private ClientToolbar clientToolbar;
 
     @Inject
@@ -76,9 +69,6 @@ public class BossDeathTrackerPlugin extends Plugin
     @Inject
     private ConfigManager configManager;
 
-    @Inject
-    private KdShareClient kdShareClient;
-
     private final BossEncounterTracker encounterTracker =
         new BossEncounterTracker();
 
@@ -88,7 +78,6 @@ public class BossDeathTrackerPlugin extends Plugin
     private String lastPanelActiveBossId;
     private String recentBossId;
     private int recentBossTick = -1;
-    private volatile KdSharePayload lastLocalShare;
 
     @Override
     protected void startUp()
@@ -97,7 +86,6 @@ public class BossDeathTrackerPlugin extends Plugin
         gameTickCounter = 0;
         recentBossId = null;
         recentBossTick = -1;
-        lastLocalShare = null;
 
         panel = new BossDeathTrackerPanel(store, config, configManager);
 
@@ -110,12 +98,11 @@ public class BossDeathTrackerPlugin extends Plugin
 
         clientToolbar.addNavigation(navigationButton);
 
-        // Match RuneLite's !task / !kc pattern: the input handler may consume
-        // the original command while data is submitted, then resume that same
-        // user-entered message. Incoming commands are handled asynchronously.
-        chatCommandManager.registerCommandAsync(
+        // Consume the player's command and queue a local result. Incoming
+        // chat commands from other players do not display our statistics.
+        chatCommandManager.registerCommand(
             KD_COMMAND,
-            this::handleKdCommandLookup,
+            (chatMessage, message) -> { },
             this::handleKdCommandInput);
 
         store.loadAsync(error ->
@@ -151,7 +138,6 @@ public class BossDeathTrackerPlugin extends Plugin
         encounterTracker.reset();
         recentBossId = null;
         recentBossTick = -1;
-        lastLocalShare = null;
 
         if (navigationButton != null)
         {
@@ -365,7 +351,7 @@ public class BossDeathTrackerPlugin extends Plugin
 
         if (query.isEmpty())
         {
-            addGameMessage("Boss KD Tracker: Usage: !KD <boss name>");
+            addGameMessage("Boss KD Tracker: Usage: !KD [boss name]");
             return true;
         }
 
@@ -404,163 +390,8 @@ public class BossDeathTrackerPlugin extends Plugin
             kills,
             deaths);
 
-        // Preserve the existing local-only command unless the user explicitly
-        // opts in to third-party chat sharing.
-        if (!config.shareKdCommand())
-        {
-            addGameMessage(result);
-            return true;
-        }
-
-        if (!kdShareClient.isValidBaseUrl(config.kdShareServer()))
-        {
-            addGameMessage(result);
-            addGameMessage("Boss KD Tracker: Set a valid HTTPS K/D share server first.");
-            return true;
-        }
-
-        Player localPlayer = client.getLocalPlayer();
-        if (localPlayer == null || localPlayer.getName() == null)
-        {
-            addGameMessage(result);
-            addGameMessage("Boss KD Tracker: Unable to identify the local player for sharing.");
-            return true;
-        }
-
-        KdSharePayload payload = KdSharePayload.create(
-            localPlayer.getName(),
-            query,
-            selected,
-            kills,
-            deaths);
-
-        kdShareClient.submit(
-            config.kdShareServer(),
-            payload,
-            success ->
-            {
-                if (success)
-                {
-                    // Store before resuming so our own outgoing !KD message can
-                    // be rewritten immediately without another network request.
-                    lastLocalShare = payload;
-                    chatInput.resume();
-                    return;
-                }
-
-                clientThread.invoke(() ->
-                {
-                    addGameMessage(result);
-                    addGameMessage("Boss KD Tracker: K/D share failed; command was not sent.");
-                });
-            });
-
-        // Consume the original user input while the async submission runs.
-        // On success, ChatInput.resume() sends that same message normally.
+        addGameMessage(result);
         return true;
-    }
-
-    private void handleKdCommandLookup(ChatMessage chatMessage, String message)
-    {
-        if (!config.shareKdCommand())
-        {
-            return;
-        }
-
-        String query = extractKdQuery(message);
-        if (query.isEmpty())
-        {
-            return;
-        }
-
-        String playerName = commandPlayerName(chatMessage);
-        if (playerName.isEmpty())
-        {
-            return;
-        }
-
-        KdSharePayload localShare = lastLocalShare;
-        Player localPlayer = client.getLocalPlayer();
-        String localName = localPlayer == null ? null : localPlayer.getName();
-
-        if (localShare != null
-            && localName != null
-            && playerName.equalsIgnoreCase(localName)
-            && localShare.matchesQuery(query))
-        {
-            clientThread.invoke(() -> applySharedKd(
-                chatMessage.getMessageNode(),
-                message,
-                localShare));
-            return;
-        }
-
-        if (!kdShareClient.isValidBaseUrl(config.kdShareServer()))
-        {
-            return;
-        }
-
-        MessageNode messageNode = chatMessage.getMessageNode();
-        kdShareClient.lookup(
-            config.kdShareServer(),
-            playerName,
-            query,
-            payload ->
-            {
-                if (payload == null)
-                {
-                    return;
-                }
-
-                clientThread.invoke(() -> applySharedKd(
-                    messageNode,
-                    message,
-                    payload));
-            });
-    }
-
-    private void applySharedKd(
-        MessageNode messageNode,
-        String originalMessage,
-        KdSharePayload payload)
-    {
-        if (messageNode == null
-            || payload == null
-            || !payload.isValid()
-            || originalMessage == null
-            || !originalMessage.equals(messageNode.getValue()))
-        {
-            return;
-        }
-
-        String result = formatKdResult(
-            payload.getBossName(),
-            payload.getKills(),
-            payload.getDeaths());
-
-        messageNode.setRuneLiteFormatMessage(result);
-        client.refreshChat();
-    }
-
-    private String commandPlayerName(ChatMessage chatMessage)
-    {
-        if (chatMessage.getType() == ChatMessageType.PRIVATECHATOUT)
-        {
-            Player localPlayer = client.getLocalPlayer();
-            return localPlayer == null || localPlayer.getName() == null
-                ? ""
-                : localPlayer.getName();
-        }
-
-        String name = chatMessage.getName();
-        if (name == null)
-        {
-            return "";
-        }
-
-        return Text.removeTags(name)
-            .replace('\u00A0', ' ')
-            .trim();
     }
 
     private static String extractKdQuery(String message)
@@ -718,7 +549,6 @@ public class BossDeathTrackerPlugin extends Plugin
             encounterTracker.reset();
             recentBossId = null;
             recentBossTick = -1;
-            lastLocalShare = null;
             syncEncounterToPanel();
         }
     }
