@@ -42,6 +42,15 @@ Boss names and values use RuneLite's highlight colors. Shortcuts such as `whisp`
 recent matching encounter (about 60 seconds); otherwise the command lists matches.
 Zero deaths displays `Perfect` when there are kills, or `0.00` when both are zero.
 
+## Future sharing hooks
+
+The command includes disabled submit and lookup hooks for a future reviewed sharing
+implementation. They always fall back to local output and ignore incoming commands.
+There is no service, network transport, hidden toggle, or automatic activation.
+Approval of this local-only release does not activate sharing. Enabling it requires
+a separate code change and release, an agreed backend, opt-in/privacy handling,
+and end-to-end tests. See [the hook contract](KD_SHARING_HOOKS.md).
+
 ## Development
 
 This project targets Java 11 and the current RuneLite release. Run the Gradle `run` task to launch a RuneLite development client with the plugin loaded.

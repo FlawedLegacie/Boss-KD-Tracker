@@ -69,6 +69,9 @@ public class BossDeathTrackerPlugin extends Plugin
     @Inject
     private ConfigManager configManager;
 
+    // Sharing requires a future reviewed implementation and release.
+    private final KdSharingHooks kdSharingHooks = KdSharingHooks.DISABLED;
+
     private final BossEncounterTracker encounterTracker =
         new BossEncounterTracker();
 
@@ -102,7 +105,7 @@ public class BossDeathTrackerPlugin extends Plugin
         // chat commands from other players do not display our statistics.
         chatCommandManager.registerCommand(
             KD_COMMAND,
-            (chatMessage, message) -> { },
+            kdSharingHooks::lookup,
             this::handleKdCommandInput);
 
         store.loadAsync(error ->
@@ -385,6 +388,12 @@ public class BossDeathTrackerPlugin extends Plugin
 
         int kills = store.getKillCount(selected.getId());
         int deaths = store.getDeathCount(selected.getId());
+        if (kdSharingHooks.submit(chatInput, query, selected.getDefinitionKey(),
+            BossNameResolver.chatDisplayName(selected), kills, deaths))
+        {
+            return true;
+        }
+
         String result = formatKdResult(
             BossNameResolver.chatDisplayName(selected),
             kills,
