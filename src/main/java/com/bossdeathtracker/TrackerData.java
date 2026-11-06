@@ -5,11 +5,12 @@ import java.util.List;
 
 public class TrackerData
 {
-    public static final int CURRENT_SCHEMA_VERSION = 2;
+    public static final int CURRENT_SCHEMA_VERSION = 3;
 
     private int schemaVersion = CURRENT_SCHEMA_VERSION;
     private List<BossProfile> bosses = new ArrayList<>();
     private List<TrackerEvent> events = new ArrayList<>();
+    private List<EncounterAttempt> attempts = new ArrayList<>();
 
     public int getSchemaVersion()
     {
@@ -34,14 +35,24 @@ public class TrackerData
         return events;
     }
 
+    public List<EncounterAttempt> getAttempts()
+    {
+        if (attempts == null)
+        {
+            attempts = new ArrayList<>();
+        }
+        return attempts;
+    }
+
     /**
      * Normalize data loaded from older JSON schemas. Gson initializes missing
-     * primitive fields to zero, so migration must be explicit.
+     * fields to null or zero, so migration must be explicit.
      */
     public void migrateToCurrent()
     {
         getBosses();
         getEvents();
+        getAttempts();
         schemaVersion = CURRENT_SCHEMA_VERSION;
     }
 }
