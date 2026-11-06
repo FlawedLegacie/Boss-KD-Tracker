@@ -25,13 +25,30 @@ public class TrackerEvent
         int amount,
         String note)
     {
+        return createAt(
+            bossId,
+            type,
+            source,
+            amount,
+            note,
+            Instant.now());
+    }
+
+    static TrackerEvent createAt(
+        String bossId,
+        TrackerEventType type,
+        TrackerEventSource source,
+        int amount,
+        String note,
+        Instant timestamp)
+    {
         TrackerEvent event = new TrackerEvent();
         event.id = UUID.randomUUID().toString();
         event.bossId = bossId;
         event.type = type;
         event.source = source;
         event.amount = amount;
-        event.timestamp = Instant.now();
+        event.timestamp = timestamp == null ? Instant.now() : timestamp;
         event.note = note == null ? "" : note;
         return event;
     }
