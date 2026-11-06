@@ -674,18 +674,14 @@ public class BossDeathTrackerStore
             return UndoResult.none("That record has already been undone.");
         }
 
+        if (event.getEncounterId() != null)
+        {
+            return voidEncounter(event.getEncounterId());
+        }
+
         data.getEvents().add(TrackerEvent.createUndo(
             event,
             "Undo history event " + event.getId()));
-
-        if (event.getEncounterId() != null)
-        {
-            EncounterAttempt attempt = findAttemptLocked(event.getEncounterId());
-            if (attempt != null)
-            {
-                attempt.voidAttempt("Count record undone from history");
-            }
-        }
 
         BossProfile boss = findBoss(event.getBossId()).orElse(null);
         queueSave();
@@ -1029,6 +1025,11 @@ public class BossDeathTrackerStore
         if (imported == null)
         {
             throw new IOException("The selected file contained no tracker data.");
+        }
+        if (imported.getSchemaVersion() > TrackerData.CURRENT_SCHEMA_VERSION)
+        {
+            throw new IOException(
+                "This profile was created by a newer Boss KD Tracker version.");
         }
 
         imported.migrateToCurrent();
