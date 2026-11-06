@@ -112,6 +112,7 @@ public class BossDeathTrackerPlugin extends Plugin
         lastLocalShare = null;
 
         panel = new BossDeathTrackerPanel(store, config, configManager);
+        panel.setSessionStartedAt(sessionStartedAt);
 
         navigationButton = NavigationButton.builder()
             .tooltip("Boss Death Tracker")
@@ -878,6 +879,10 @@ public class BossDeathTrackerPlugin extends Plugin
         if (state == GameState.LOGGED_IN)
         {
             sessionStartedAt = Instant.now();
+            if (panel != null)
+            {
+                panel.setSessionStartedAt(sessionStartedAt);
+            }
             loadCurrentProfileData();
             return;
         }
