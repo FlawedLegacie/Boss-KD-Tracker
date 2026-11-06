@@ -6,6 +6,7 @@ import java.util.UUID;
 public class TrackerEvent
 {
     private String id;
+    private String encounterId;
     private String bossId;
     private TrackerEventType type;
     private TrackerEventSource source;
@@ -25,7 +26,25 @@ public class TrackerEvent
         int amount,
         String note)
     {
+        return createForEncounter(
+            null,
+            bossId,
+            type,
+            source,
+            amount,
+            note);
+    }
+
+    static TrackerEvent createForEncounter(
+        String encounterId,
+        String bossId,
+        TrackerEventType type,
+        TrackerEventSource source,
+        int amount,
+        String note)
+    {
         return createAt(
+            encounterId,
             bossId,
             type,
             source,
@@ -42,8 +61,28 @@ public class TrackerEvent
         String note,
         Instant timestamp)
     {
+        return createAt(
+            null,
+            bossId,
+            type,
+            source,
+            amount,
+            note,
+            timestamp);
+    }
+
+    static TrackerEvent createAt(
+        String encounterId,
+        String bossId,
+        TrackerEventType type,
+        TrackerEventSource source,
+        int amount,
+        String note,
+        Instant timestamp)
+    {
         TrackerEvent event = new TrackerEvent();
         event.id = UUID.randomUUID().toString();
+        event.encounterId = encounterId;
         event.bossId = bossId;
         event.type = type;
         event.source = source;
@@ -56,6 +95,11 @@ public class TrackerEvent
     public String getId()
     {
         return id;
+    }
+
+    public String getEncounterId()
+    {
+        return encounterId;
     }
 
     public String getBossId()
