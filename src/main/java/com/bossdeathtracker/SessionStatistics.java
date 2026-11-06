@@ -2,6 +2,8 @@ package com.bossdeathtracker;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 public final class SessionStatistics
@@ -12,6 +14,8 @@ public final class SessionStatistics
     private final int deaths;
     private final int doubleKos;
     private final int abandoned;
+    private final int currentStreak;
+    private final int bestStreak;
     private final long personalBestMillis;
     private final long averageKillMillis;
 
@@ -22,6 +26,8 @@ public final class SessionStatistics
         int deaths,
         int doubleKos,
         int abandoned,
+        int currentStreak,
+        int bestStreak,
         long personalBestMillis,
         long averageKillMillis)
     {
@@ -31,6 +37,8 @@ public final class SessionStatistics
         this.deaths = deaths;
         this.doubleKos = doubleKos;
         this.abandoned = abandoned;
+        this.currentStreak = currentStreak;
+        this.bestStreak = bestStreak;
         this.personalBestMillis = personalBestMillis;
         this.averageKillMillis = averageKillMillis;
     }
@@ -47,52 +55,72 @@ public final class SessionStatistics
         int deaths = 0;
         int doubleKos = 0;
         int abandoned = 0;
+        int currentStreak = 0;
+        int bestStreak = 0;
         long personalBest = 0L;
         long durationTotal = 0L;
         int timedKills = 0;
+        List<EncounterAttempt> sessionAttempts = new ArrayList<>();
 
         if (source != null)
         {
             for (EncounterAttempt attempt : source)
             {
-                if (attempt == null
-                    || attempt.getStartedAt() == null
-                    || attempt.getStartedAt().isBefore(start))
+                if (attempt != null
+                    && attempt.getStartedAt() != null
+                    && !attempt.getStartedAt().isBefore(start))
                 {
-                    continue;
+                    sessionAttempts.add(attempt);
                 }
+            }
+        }
 
-                EncounterOutcome outcome = attempt.getOutcome();
-                if (outcome.countsAttempt())
+        sessionAttempts.sort(Comparator.comparing(
+            EncounterAttempt::getStartedAt,
+            Comparator.nullsLast(Comparator.naturalOrder())));
+
+        for (EncounterAttempt attempt : sessionAttempts)
+        {
+            EncounterOutcome outcome = attempt.getOutcome();
+            if (outcome.countsAttempt())
+            {
+                attempts++;
+            }
+            if (outcome.countsKill())
+            {
+                kills++;
+                long duration = attempt.getDurationMillis();
+                if (duration > 0L)
                 {
-                    attempts++;
+                    personalBest = personalBest == 0L
+                        ? duration
+                        : Math.min(personalBest, duration);
+                    durationTotal += duration;
+                    timedKills++;
                 }
-                if (outcome.countsKill())
-                {
-                    kills++;
-                    long duration = attempt.getDurationMillis();
-                    if (duration > 0L)
-                    {
-                        personalBest = personalBest == 0L
-                            ? duration
-                            : Math.min(personalBest, duration);
-                        durationTotal += duration;
-                        timedKills++;
-                    }
-                }
-                if (outcome.countsDeath())
-                {
-                    deaths++;
-                }
-                if (outcome == EncounterOutcome.DOUBLE_KO)
-                {
-                    doubleKos++;
-                }
-                if (outcome == EncounterOutcome.ABANDONED
-                    || outcome == EncounterOutcome.DISCONNECTED)
-                {
-                    abandoned++;
-                }
+            }
+            if (outcome.countsDeath())
+            {
+                deaths++;
+            }
+            if (outcome == EncounterOutcome.DOUBLE_KO)
+            {
+                doubleKos++;
+            }
+            if (outcome == EncounterOutcome.ABANDONED
+                || outcome == EncounterOutcome.DISCONNECTED)
+            {
+                abandoned++;
+            }
+
+            if (outcome.countsDeath())
+            {
+                currentStreak = 0;
+            }
+            else if (outcome == EncounterOutcome.KILL)
+            {
+                currentStreak++;
+                bestStreak = Math.max(bestStreak, currentStreak);
             }
         }
 
@@ -103,6 +131,8 @@ public final class SessionStatistics
             deaths,
             doubleKos,
             abandoned,
+            currentStreak,
+            bestStreak,
             personalBest,
             timedKills == 0 ? 0L : durationTotal / timedKills);
     }
@@ -135,6 +165,16 @@ public final class SessionStatistics
     public int getAbandoned()
     {
         return abandoned;
+    }
+
+    public int getCurrentStreak()
+    {
+        return currentStreak;
+    }
+
+    public int getBestStreak()
+    {
+        return bestStreak;
     }
 
     public long getPersonalBestMillis()
