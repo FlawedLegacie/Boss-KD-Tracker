@@ -53,6 +53,7 @@ public final class BossStatistics
             for (EncounterAttempt attempt : source)
             {
                 if (attempt != null
+                    && !attempt.isVoided()
                     && bossId != null
                     && bossId.equals(attempt.getBossId()))
                 {

@@ -19,6 +19,9 @@ public class EncounterAttempt
     private EncounterOutcome outcome = EncounterOutcome.IN_PROGRESS;
     private String completionSignal = "";
     private String note = "";
+    private boolean voided;
+    private String voidReason = "";
+    private Instant voidedAt;
 
     public EncounterAttempt()
     {
@@ -70,6 +73,18 @@ public class EncounterAttempt
         this.note = note == null ? "" : note;
     }
 
+    void voidAttempt(String reason)
+    {
+        if (voided)
+        {
+            return;
+        }
+
+        voided = true;
+        voidReason = reason == null ? "" : reason;
+        voidedAt = Instant.now();
+    }
+
     public String getId()
     {
         return id;
@@ -113,6 +128,21 @@ public class EncounterAttempt
     public String getNote()
     {
         return note == null ? "" : note;
+    }
+
+    public boolean isVoided()
+    {
+        return voided;
+    }
+
+    public String getVoidReason()
+    {
+        return voidReason == null ? "" : voidReason;
+    }
+
+    public Instant getVoidedAt()
+    {
+        return voidedAt;
     }
 
     public boolean isCompleted()

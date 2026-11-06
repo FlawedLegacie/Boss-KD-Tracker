@@ -14,6 +14,7 @@ public class BossProfile
     private String category;
     private String subcategory;
     private boolean customBoss;
+    private boolean favorite;
     private SyncStatus syncStatus;
     private List<Integer> npcIds = new ArrayList<>();
     private boolean encounterVerified;
@@ -42,7 +43,9 @@ public class BossProfile
         boss.subcategory = subcategory;
         boss.customBoss = true;
         boss.syncStatus =
-            npcIds == null || npcIds.isEmpty() ? SyncStatus.MANUAL : SyncStatus.PARTIAL;
+            npcIds == null || npcIds.isEmpty()
+                ? SyncStatus.MANUAL
+                : SyncStatus.PARTIAL;
         boss.npcIds = copyIds(npcIds);
         boss.notes = notes == null ? "" : notes;
         boss.createdAt = Instant.now();
@@ -65,8 +68,6 @@ public class BossProfile
             boss.npcIds.add(npcId);
         }
 
-        // IDs are known, but encounter/death automation is intentionally not
-        // enabled in this build yet.
         boss.syncStatus = SyncStatus.PARTIAL;
         boss.notes = "";
         boss.createdAt = Instant.now();
@@ -102,6 +103,11 @@ public class BossProfile
     public boolean isCustomBoss()
     {
         return customBoss;
+    }
+
+    public boolean isFavorite()
+    {
+        return favorite;
     }
 
     public SyncStatus getSyncStatus()
@@ -172,16 +178,86 @@ public class BossProfile
         touch();
     }
 
+    public void setFavorite(boolean favorite)
+    {
+        this.favorite = favorite;
+        touch();
+    }
+
     public void setNpcIds(List<Integer> ids)
     {
         npcIds = copyIds(ids);
 
-        if (customBoss && !npcIds.isEmpty() && getSyncStatus() == SyncStatus.MANUAL)
+        if (customBoss
+            && !npcIds.isEmpty()
+            && getSyncStatus() == SyncStatus.MANUAL)
         {
             syncStatus = SyncStatus.PARTIAL;
         }
 
         touch();
+    }
+
+    /**
+     * Replace the profile with the authoritative built-in definition.
+     * User-supplied extra NPC IDs, notes, favorites, event history, and
+     * verification flags are intentionally retained.
+     */
+    public boolean synchronizeDefinition(BossDefinition definition)
+    {
+        if (definition == null)
+        {
+            return false;
+        }
+
+        boolean changed = false;
+
+        if (!safeEquals(definitionKey, definition.getKey()))
+        {
+            definitionKey = definition.getKey();
+            changed = true;
+        }
+        if (!safeEquals(displayName, definition.getDisplayName()))
+        {
+            displayName = definition.getDisplayName();
+            changed = true;
+        }
+        if (!safeEquals(category, definition.getCategory()))
+        {
+            category = definition.getCategory();
+            changed = true;
+        }
+        if (!safeEquals(subcategory, definition.getSubcategory()))
+        {
+            subcategory = definition.getSubcategory();
+            changed = true;
+        }
+        if (customBoss)
+        {
+            customBoss = false;
+            changed = true;
+        }
+
+        List<Integer> mergedIds = copyIds(npcIds);
+        for (int npcId : definition.getNpcIds())
+        {
+            if (!mergedIds.contains(npcId))
+            {
+                mergedIds.add(npcId);
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            npcIds = mergedIds;
+            syncStatus = deathVerified && killVerified
+                ? SyncStatus.AUTO
+                : SyncStatus.SYNCED;
+            touch();
+        }
+
+        return changed;
     }
 
     public void applyDefinition(BossDefinition definition)
@@ -190,6 +266,7 @@ public class BossProfile
         displayName = definition.getDisplayName();
         category = definition.getCategory();
         subcategory = definition.getSubcategory();
+        customBoss = false;
 
         npcIds = new ArrayList<>();
         for (int npcId : definition.getNpcIds())
@@ -230,7 +307,8 @@ public class BossProfile
         {
             syncStatus = SyncStatus.AUTO;
         }
-        else if (getSyncStatus() == SyncStatus.MANUAL && !getNpcIds().isEmpty())
+        else if (getSyncStatus() == SyncStatus.MANUAL
+            && !getNpcIds().isEmpty())
         {
             syncStatus = SyncStatus.PARTIAL;
         }
@@ -251,6 +329,11 @@ public class BossProfile
     private void touch()
     {
         updatedAt = Instant.now();
+    }
+
+    private static boolean safeEquals(String left, String right)
+    {
+        return left == null ? right == null : left.equals(right);
     }
 
     private static List<Integer> copyIds(List<Integer> ids)

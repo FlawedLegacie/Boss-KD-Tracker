@@ -11,13 +11,27 @@ Boss KD Tracker is a RuneLite plugin for tracking boss kills, deaths, K/D ratios
 - Current-session attempts, K/D, win rate, PB, average, and streaks
 - Conservative double-KO recognition when KC confirms the kill
 - Historical kill-count synchronization from RuneLite profile data
-- Manual `+ Death` and `+ Kill` corrections
+- Manual corrections and reversible history
 - `!KD <boss>` chat command with shorthand and contextual name resolution
 - Current, Session, Nemesis, and Records summary views
+- Favorites, category filtering, and performance sorting
 - Searchable boss catalog with built-in NPC IDs and multi-form boss support
+- Validated profile import/export and automatic recovery backups
+- Non-destructive official boss-definition synchronization
 - Manual boss creation for new or unsupported bosses
 - Quest boss support
-- Local event and attempt history
+
+## 0.11.0 interface and data changes
+
+- The side panel is organized into Bosses, History, and Data tabs.
+- Bosses can be favorited, filtered by category, and sorted by name, kills, deaths, attempts, win rate, or active/recent status.
+- History uses a filterable table for encounter outcomes and manual/imported count records.
+- A selected encounter or count record can be undone without deleting history: the plugin appends correction records and marks linked encounter statistics as voided.
+- The active character profile can be exported to JSON or imported from a validated JSON backup.
+- Imports reject unknown boss references, duplicate boss IDs, malformed data, and schemas created by a newer plugin version.
+- Official definition synchronization adds missing bosses and merges new official NPC IDs while preserving custom IDs, notes, favorites, history, and verification state.
+- Built-in definitions are protected from deletion; custom bosses remain fully editable and removable.
+- Duplicate NPC ID conflicts are reported after definition synchronization.
 
 ## 0.10.0 encounter and statistics changes
 
