@@ -1,0 +1,158 @@
+name: Apply 0.10 statistics dashboard
+
+on:
+  push:
+    branches:
+      - release/0.10.0-encounters
+    paths:
+      - .github/workflows/apply-0.10-dashboard.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/0.10.0-encounters
+
+      - name: Add session and boss statistics UI
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          panel_path = Path('src/main/java/com/bossdeathtracker/BossDeathTrackerPanel.java')
+          source = panel_path.read_text(encoding='utf-8')
+
+          source = source.replace(
+              'import java.net.URL;\nimport java.time.ZoneId;',
+              'import java.net.URL;\nimport java.time.Instant;\nimport java.time.ZoneId;',
+              1,
+          )
+          source = source.replace(
+              '''    private enum HeaderMode\n    {\n        CURRENT,\n        NEMESIS,\n        RECORDS\n    }''',
+              '''    private enum HeaderMode\n    {\n        CURRENT,\n        SESSION,\n        NEMESIS,\n        RECORDS\n    }''',
+              1,
+          )
+
+          old_fields = '''    private final JButton currentHeaderButton = new JButton("Current");\n    private final JButton nemesisHeaderButton = new JButton("Nemesis");\n    private final JButton recordsHeaderButton = new JButton("Records");\n    private final JLabel insightBossValue = new JLabel("No recent boss");\n    private final JLabel insightKillsValue = new JLabel("0");\n    private final JLabel insightDeathsValue = new JLabel("0");\n    private final JLabel insightKdValue = new JLabel("0.00");\n    private HeaderMode headerMode = HeaderMode.CURRENT;\n'''
+          new_fields = '''    private final JButton currentHeaderButton = new JButton("Current");\n    private final JButton sessionHeaderButton = new JButton("Session");\n    private final JButton nemesisHeaderButton = new JButton("Nemesis");\n    private final JButton recordsHeaderButton = new JButton("Records");\n    private final JLabel insightBossValue = new JLabel("No recent boss");\n    private final JLabel insightKillsValue = new JLabel("0");\n    private final JLabel insightDeathsValue = new JLabel("0");\n    private final JLabel insightKdValue = new JLabel("0.00");\n    private final JLabel insightAttemptsValue = new JLabel("0");\n    private final JLabel insightWinRateValue = new JLabel("0.0%");\n    private final JLabel insightPbValue = new JLabel("--");\n    private final JLabel insightAverageValue = new JLabel("--");\n    private final JLabel insightStreakValue = new JLabel("0");\n    private HeaderMode headerMode = HeaderMode.CURRENT;\n'''
+          if old_fields not in source:
+              raise SystemExit('Panel metric fields not found')
+          source = source.replace(old_fields, new_fields, 1)
+
+          source = source.replace(
+              '''    private String activeBossId;\n    private String mostRecentBossId;\n''',
+              '''    private String activeBossId;\n    private String mostRecentBossId;\n    private Instant sessionStartedAt = Instant.now();\n''',
+              1,
+          )
+
+          setter_anchor = '''    public void refresh()\n    {\n'''
+          setter = '''    public void setSessionStartedAt(Instant sessionStartedAt)\n    {\n        this.sessionStartedAt = sessionStartedAt == null\n            ? Instant.now()\n            : sessionStartedAt;\n        refresh();\n    }\n\n'''
+          if setter_anchor not in source:
+              raise SystemExit('Panel refresh anchor not found')
+          source = source.replace(setter_anchor, setter + setter_anchor, 1)
+
+          source = source.replace(
+              'new GridLayout(1, 3, 3, 0)',
+              'new GridLayout(1, 4, 3, 0)',
+              1,
+          )
+          source = source.replace(
+              '''        configureHeaderButton(currentHeaderButton, HeaderMode.CURRENT);\n        configureHeaderButton(nemesisHeaderButton, HeaderMode.NEMESIS);\n        configureHeaderButton(recordsHeaderButton, HeaderMode.RECORDS);\n\n        modeButtons.add(currentHeaderButton);\n        modeButtons.add(nemesisHeaderButton);\n        modeButtons.add(recordsHeaderButton);\n''',
+              '''        configureHeaderButton(currentHeaderButton, HeaderMode.CURRENT);\n        configureHeaderButton(sessionHeaderButton, HeaderMode.SESSION);\n        configureHeaderButton(nemesisHeaderButton, HeaderMode.NEMESIS);\n        configureHeaderButton(recordsHeaderButton, HeaderMode.RECORDS);\n\n        modeButtons.add(currentHeaderButton);\n        modeButtons.add(sessionHeaderButton);\n        modeButtons.add(nemesisHeaderButton);\n        modeButtons.add(recordsHeaderButton);\n''',
+              1,
+          )
+
+          summary_anchor = '''        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(chartIcon, "K/D", insightKdValue));\n'''
+          summary_extra = '''        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(chartIcon, "K/D", insightKdValue));\n        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(detailsIcon, "Attempts", insightAttemptsValue));\n        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(trophyIcon, "Win rate", insightWinRateValue));\n        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(trophyIcon, "Personal best", insightPbValue));\n        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(chartIcon, "Average kill", insightAverageValue));\n        summary.add(buildMetricSeparator());\n        summary.add(buildInsightRow(swordIcon, "Current streak", insightStreakValue));\n'''
+          if summary_anchor not in source:
+              raise SystemExit('Summary rows anchor not found')
+          source = source.replace(summary_anchor, summary_extra, 1)
+
+          configure_old = '''        else if (mode == HeaderMode.NEMESIS)\n        {\n            button.setIcon(skullIcon);\n            button.setToolTipText("Boss with the most tracked deaths");\n        }\n        else\n        {\n            button.setIcon(trophyIcon);\n            button.setToolTipText("Boss with your highest kill count");\n        }\n'''
+          configure_new = '''        else if (mode == HeaderMode.SESSION)\n        {\n            button.setIcon(chartIcon);\n            button.setToolTipText("Statistics since this login session began");\n        }\n        else if (mode == HeaderMode.NEMESIS)\n        {\n            button.setIcon(skullIcon);\n            button.setToolTipText("Boss with the most tracked deaths");\n        }\n        else\n        {\n            button.setIcon(trophyIcon);\n            button.setToolTipText("Boss with your highest kill count");\n        }\n'''
+          if configure_old not in source:
+              raise SystemExit('Header button style block not found')
+          source = source.replace(configure_old, configure_new, 1)
+
+          state_old = '''        styleModeButton(currentHeaderButton, headerMode == HeaderMode.CURRENT);\n        styleModeButton(nemesisHeaderButton, headerMode == HeaderMode.NEMESIS);\n        styleModeButton(recordsHeaderButton, headerMode == HeaderMode.RECORDS);\n'''
+          state_new = '''        styleModeButton(currentHeaderButton, headerMode == HeaderMode.CURRENT);\n        styleModeButton(sessionHeaderButton, headerMode == HeaderMode.SESSION);\n        styleModeButton(nemesisHeaderButton, headerMode == HeaderMode.NEMESIS);\n        styleModeButton(recordsHeaderButton, headerMode == HeaderMode.RECORDS);\n'''
+          if state_old not in source:
+              raise SystemExit('Header state block not found')
+          source = source.replace(state_old, state_new, 1)
+
+          insight_pattern = re.compile(
+              r'    private void updateInsightSummary\(\)\n    \{.*?\n    }\n\n(?=    private JPanel buildSearch)',
+              re.S,
+          )
+          insight_method = '''    private void updateInsightSummary()\n    {\n        updateHeaderButtonState();\n\n        if (headerMode == HeaderMode.SESSION)\n        {\n            SessionStatistics session =\n                store.getSessionStatistics(sessionStartedAt);\n\n            insightBossValue.setText(\n                "Current Session ("\n                    + formatDuration(session.getElapsedMillis(Instant.now()))\n                    + ")");\n            setSummaryValues(\n                session.getKills(),\n                session.getDeaths(),\n                session.getAttempts(),\n                session.getWinRate(),\n                session.getPersonalBestMillis(),\n                session.getAverageKillMillis(),\n                session.getCurrentStreak());\n            return;\n        }\n\n        BossProfile boss = null;\n\n        switch (headerMode)\n        {\n            case NEMESIS:\n                boss = store.getBossWithMostDeaths();\n                break;\n\n            case RECORDS:\n                boss = store.getBossWithMostKills();\n                break;\n\n            case CURRENT:\n            default:\n                String bossId = activeBossId != null\n                    ? activeBossId\n                    : mostRecentBossId;\n\n                if (bossId != null)\n                {\n                    boss = store.findBoss(bossId).orElse(null);\n                }\n                break;\n        }\n\n        if (boss == null)\n        {\n            if (headerMode == HeaderMode.NEMESIS)\n            {\n                insightBossValue.setText("No tracked deaths yet");\n            }\n            else if (headerMode == HeaderMode.RECORDS)\n            {\n                insightBossValue.setText("No boss kills yet");\n            }\n            else\n            {\n                insightBossValue.setText("No recent boss");\n            }\n\n            setSummaryValues(0, 0, 0, 0.0, 0L, 0L, 0);\n            return;\n        }\n\n        int kills = store.getKillCount(boss.getId());\n        int deaths = store.getDeathCount(boss.getId());\n        BossStatistics statistics =\n            store.getBossStatistics(boss.getId());\n\n        insightBossValue.setText(boss.getDisplayName());\n        setSummaryValues(\n            kills,\n            deaths,\n            statistics.getAttempts(),\n            statistics.getWinRate(),\n            statistics.getPersonalBestMillis(),\n            statistics.getAverageKillMillis(),\n            statistics.getCurrentStreak());\n    }\n\n    private void setSummaryValues(\n        int kills,\n        int deaths,\n        int attempts,\n        double winRate,\n        long personalBestMillis,\n        long averageKillMillis,\n        int currentStreak)\n    {\n        insightKillsValue.setText(Integer.toString(kills));\n        insightDeathsValue.setText(Integer.toString(deaths));\n        insightKdValue.setText(formatRatio(kills, deaths));\n        insightAttemptsValue.setText(Integer.toString(attempts));\n        insightWinRateValue.setText(formatPercent(winRate));\n        insightPbValue.setText(formatDuration(personalBestMillis));\n        insightAverageValue.setText(formatDuration(averageKillMillis));\n        insightStreakValue.setText(Integer.toString(currentStreak));\n    }\n\n    private static String formatRatio(int kills, int deaths)\n    {\n        if (deaths == 0)\n        {\n            return kills > 0 ? "\\u221e" : "0.00";\n        }\n\n        return String.format(\n            Locale.ROOT,\n            "%.2f",\n            (double) kills / (double) deaths);\n    }\n\n    private static String formatPercent(double value)\n    {\n        return String.format(Locale.ROOT, "%.1f%%", value * 100.0);\n    }\n\n    private static String formatDuration(long millis)\n    {\n        if (millis <= 0L)\n        {\n            return "--";\n        }\n\n        long totalSeconds = millis / 1000L;\n        long hours = totalSeconds / 3600L;\n        long minutes = (totalSeconds % 3600L) / 60L;\n        long seconds = totalSeconds % 60L;\n\n        if (hours > 0L)\n        {\n            return String.format(\n                Locale.ROOT,\n                "%d:%02d:%02d",\n                hours,\n                minutes,\n                seconds);\n        }\n\n        return String.format(\n            Locale.ROOT,\n            "%d:%02d",\n            minutes,\n            seconds);\n    }\n\n'''
+          source, count = insight_pattern.subn(insight_method, source, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one insight method, found {count}')
+
+          source = source.replace(
+              'card.setMaximumSize(new Dimension(Integer.MAX_VALUE, 154));',
+              'card.setMaximumSize(new Dimension(Integer.MAX_VALUE, 180));',
+              1,
+          )
+          counts_anchor = '''        int deaths = store.getDeathCount(boss.getId());\n        int kills = store.getKillCount(boss.getId());\n\n        JLabel totals = new JLabel(\n'''
+          counts_replacement = '''        int deaths = store.getDeathCount(boss.getId());\n        int kills = store.getKillCount(boss.getId());\n        BossStatistics statistics =\n            store.getBossStatistics(boss.getId());\n\n        JLabel totals = new JLabel(\n'''
+          if counts_anchor not in source:
+              raise SystemExit('Boss-card count anchor not found')
+          source = source.replace(counts_anchor, counts_replacement, 1)
+
+          forms_anchor = '''        JLabel forms = new JLabel(\n            "<html><span style='color:#999999'>Known forms:</span> <b>"\n'''
+          attempt_label = '''        JLabel attemptSummary = new JLabel(\n            "<html>"\n                + "<span style='color:#aaaaaa'>Attempts:</span> <b>"\n                + statistics.getAttempts()\n                + "</b> &nbsp;&nbsp; "\n                + "<span style='color:#aaaaaa'>Win:</span> <b>"\n                + formatPercent(statistics.getWinRate())\n                + "</b> &nbsp;&nbsp; "\n                + "<span style='color:#aaaaaa'>PB:</span> <b>"\n                + formatDuration(statistics.getPersonalBestMillis())\n                + "</b></html>");\n        attemptSummary.setForeground(Color.LIGHT_GRAY);\n        attemptSummary.setAlignmentX(Component.LEFT_ALIGNMENT);\n\n        JLabel forms = new JLabel(\n            "<html><span style='color:#999999'>Known forms:</span> <b>"\n'''
+          if forms_anchor not in source:
+              raise SystemExit('Boss-card forms anchor not found')
+          source = source.replace(forms_anchor, attempt_label, 1)
+          source = source.replace(
+              '''        card.add(totals);\n        card.add(Box.createVerticalStrut(2));\n        card.add(forms);\n''',
+              '''        card.add(totals);\n        card.add(Box.createVerticalStrut(2));\n        card.add(attemptSummary);\n        card.add(Box.createVerticalStrut(2));\n        card.add(forms);\n''',
+              1,
+          )
+
+          details_anchor = '''        JLabel counts = new JLabel(\n            "Deaths: " + store.getDeathCount(boss.getId())\n                + "    Kills: " + store.getKillCount(boss.getId()));\n\n        JLabel ids = new JLabel(\n'''
+          details_replacement = '''        BossStatistics statistics =\n            store.getBossStatistics(boss.getId());\n\n        JLabel counts = new JLabel(\n            "Deaths: " + store.getDeathCount(boss.getId())\n                + "    Kills: " + store.getKillCount(boss.getId()));\n\n        JLabel performance = new JLabel(\n            "<html>"\n                + "Attempts: <b>" + statistics.getAttempts() + "</b><br>"\n                + "Win rate: <b>" + formatPercent(statistics.getWinRate()) + "</b><br>"\n                + "Current / best streak: <b>"\n                + statistics.getCurrentStreak() + " / " + statistics.getBestStreak()\n                + "</b><br>"\n                + "Personal best: <b>"\n                + formatDuration(statistics.getPersonalBestMillis()) + "</b><br>"\n                + "Average kill: <b>"\n                + formatDuration(statistics.getAverageKillMillis()) + "</b><br>"\n                + "Double KOs: <b>" + statistics.getDoubleKos() + "</b>"\n                + "</html>");\n        performance.setAlignmentX(Component.LEFT_ALIGNMENT);\n\n        JLabel ids = new JLabel(\n'''
+          if details_anchor not in source:
+              raise SystemExit('Boss details count block not found')
+          source = source.replace(details_anchor, details_replacement, 1)
+          source = source.replace(
+              '''        panel.add(counts);\n        panel.add(Box.createVerticalStrut(4));\n        panel.add(ids);\n''',
+              '''        panel.add(counts);\n        panel.add(Box.createVerticalStrut(4));\n        panel.add(performance);\n        panel.add(Box.createVerticalStrut(4));\n        panel.add(ids);\n''',
+              1,
+          )
+
+          panel_path.write_text(source, encoding='utf-8')
+
+          plugin_path = Path('src/main/java/com/bossdeathtracker/BossDeathTrackerPlugin.java')
+          plugin = plugin_path.read_text(encoding='utf-8')
+          plugin = plugin.replace(
+              '''        panel = new BossDeathTrackerPanel(store, config, configManager);\n\n        navigationButton = NavigationButton.builder()''',
+              '''        panel = new BossDeathTrackerPanel(store, config, configManager);\n        panel.setSessionStartedAt(sessionStartedAt);\n\n        navigationButton = NavigationButton.builder()''',
+              1,
+          )
+          plugin = plugin.replace(
+              '''        if (state == GameState.LOGGED_IN)\n        {\n            sessionStartedAt = Instant.now();\n            loadCurrentProfileData();\n''',
+              '''        if (state == GameState.LOGGED_IN)\n        {\n            sessionStartedAt = Instant.now();\n            if (panel != null)\n            {\n                panel.setSessionStartedAt(sessionStartedAt);\n            }\n            loadCurrentProfileData();\n''',
+              1,
+          )
+          plugin_path.write_text(plugin, encoding='utf-8')
+          PY
+
+      - name: Remove one-time workflow
+        run: rm .github/workflows/apply-0.10-dashboard.yml
+
+      - name: Commit dashboard changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main/java/com/bossdeathtracker/BossDeathTrackerPanel.java src/main/java/com/bossdeathtracker/BossDeathTrackerPlugin.java .github/workflows/apply-0.10-dashboard.yml
+          git commit -m "Add encounter and session statistics dashboard"
+          git push
