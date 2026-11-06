@@ -5,7 +5,9 @@ import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import net.runelite.api.ChatMessageType;
@@ -48,7 +50,7 @@ public class BossDeathTrackerPlugin extends Plugin
 {
     private static final String KD_COMMAND = "!KD";
     private static final int RECENT_BOSS_CONTEXT_TICKS = 100;
-    private static final int KILL_CONFIRMATION_DELAY_TICKS = 2;
+    private static final int ENCOUNTER_RESOLUTION_DELAY_TICKS = 3;
 
     private static final Logger log =
         LoggerFactory.getLogger(BossDeathTrackerPlugin.class);
@@ -89,8 +91,13 @@ public class BossDeathTrackerPlugin extends Plugin
     private String lastPanelActiveBossId;
     private String recentBossId;
     private int recentBossTick = -1;
-    private PendingKill pendingKill;
-    private int lastPlayerDeathTick = -1;
+    private final EncounterResolutionWindow encounterResolution =
+        new EncounterResolutionWindow(ENCOUNTER_RESOLUTION_DELAY_TICKS);
+    private String activeEncounterId;
+    private String activeEncounterBossId;
+    private Integer activeEncounterStartingKc;
+    private BossEncounterTracker.Attribution pendingAttribution;
+    private Instant sessionStartedAt;
     private volatile KdSharePayload lastLocalShare;
 
     @Override
@@ -100,8 +107,8 @@ public class BossDeathTrackerPlugin extends Plugin
         gameTickCounter = 0;
         recentBossId = null;
         recentBossTick = -1;
-        pendingKill = null;
-        lastPlayerDeathTick = -1;
+        resetEncounterResolutionState();
+        sessionStartedAt = Instant.now();
         lastLocalShare = null;
 
         panel = new BossDeathTrackerPanel(store, config, configManager);
@@ -160,11 +167,13 @@ public class BossDeathTrackerPlugin extends Plugin
     protected void shutDown()
     {
         chatCommandManager.unregisterCommand(KD_COMMAND);
+        abandonActiveEncounter(
+            EncounterOutcome.DISCONNECTED,
+            "Plugin shutdown");
         encounterTracker.reset();
         recentBossId = null;
         recentBossTick = -1;
-        pendingKill = null;
-        lastPlayerDeathTick = -1;
+        resetEncounterResolutionState();
         lastLocalShare = null;
 
         if (navigationButton != null)
@@ -181,6 +190,13 @@ public class BossDeathTrackerPlugin extends Plugin
     public void onConfigChanged(ConfigChanged event)
     {
         if (!"killcount".equals(event.getGroup()))
+        {
+            return;
+        }
+
+        // During an active attempt, a KC increase is authoritative evidence for
+        // the outcome resolver. Do not import that same increment separately.
+        if (confirmKillCountProgress())
         {
             return;
         }
@@ -261,8 +277,10 @@ public class BossDeathTrackerPlugin extends Plugin
     public void onGameTick(GameTick event)
     {
         gameTickCounter++;
-        confirmPendingKill();
+        confirmKillCountProgress();
+        resolvePendingEncounter();
         encounterTracker.onGameTick(gameTickCounter);
+        closeExpiredEncounterIfNeeded();
 
         // Refresh the current interaction each game tick. This handles cases
         // where the plugin was enabled after an NPC had already spawned.
@@ -295,157 +313,212 @@ public class BossDeathTrackerPlugin extends Plugin
             return;
         }
 
-        // A local-player death always cancels an unconfirmed NPC kill. RuneLite
-        // can deliver the boss ActorDeath before the player ActorDeath on the
-        // same game tick, so boss kills are confirmed after a short delay.
         if (event.getActor() == localPlayer)
         {
-            lastPlayerDeathTick = gameTickCounter;
-            pendingKill = null;
-
-            if (config.automaticDeaths())
-            {
+            BossEncounterTracker.Attribution attribution =
                 encounterTracker.getDeathAttribution(gameTickCounter)
-                    .ifPresent(this::recordAutomaticDeath);
+                    .orElse(pendingAttribution);
+
+            if (!config.automaticDeaths())
+            {
+                abandonActiveEncounter(
+                    EncounterOutcome.ABANDONED,
+                    "Player died while automatic death tracking was disabled");
+                encounterTracker.reset();
+                syncEncounterToPanel();
+                return;
             }
 
-            // Always clear the encounter after a player death, even when death
-            // tracking is disabled or attribution is unavailable. Leaving stale
-            // encounter state here can turn a later NPC despawn into a false kill.
+            if (attribution != null)
+            {
+                ensureActiveEncounter(attribution);
+                pendingAttribution = attribution;
+                encounterResolution.observePlayerDeath(gameTickCounter);
+            }
+
+            // Keep the attempt pending until KC and NPC-death events have had
+            // time to arrive. This makes event order irrelevant.
             encounterTracker.reset();
             syncEncounterToPanel();
             return;
         }
 
-        if (!(event.getActor() instanceof NPC) || !config.automaticKills())
+        if (!(event.getActor() instanceof NPC)
+            || !config.automaticKills())
         {
-            return;
-        }
-
-        // If the local player is already at zero health, or died within the
-        // confirmation window, the NPC death belongs to the failed attempt.
-        if (localPlayer.getHealthRatio() == 0
-            || (lastPlayerDeathTick >= 0
-                && gameTickCounter - lastPlayerDeathTick
-                    <= KILL_CONFIRMATION_DELAY_TICKS))
-        {
-            pendingKill = null;
-            encounterTracker.reset();
-            syncEncounterToPanel();
             return;
         }
 
         NPC deadNpc = (NPC) event.getActor();
-
         encounterTracker.getKillAttribution(
             deadNpc,
             store,
             gameTickCounter)
             .ifPresent(attribution ->
             {
-                // Do not commit immediately. Waiting two game ticks allows a
-                // player ActorDeath from the same failed attempt to cancel it,
-                // regardless of which ActorDeath event RuneLite posts first.
-                if (pendingKill == null)
-                {
-                    pendingKill = new PendingKill(
-                        attribution,
-                        gameTickCounter);
+                ensureActiveEncounter(attribution);
+                pendingAttribution = attribution;
+                encounterResolution.observeBossDeath(gameTickCounter);
 
-                    log.debug(
-                        "Queued boss kill confirmation for {} (NPC ID {})",
-                        attribution.getBossName(),
-                        attribution.getNpcId());
-                }
+                log.debug(
+                    "Observed boss death for {} (NPC ID {}); awaiting confirmation",
+                    attribution.getBossName(),
+                    attribution.getNpcId());
             });
     }
 
-    private void confirmPendingKill()
+    private void resolvePendingEncounter()
     {
-        PendingKill candidate = pendingKill;
-
-        if (candidate == null
-            || gameTickCounter - candidate.observedTick
-                < KILL_CONFIRMATION_DELAY_TICKS)
+        if (activeEncounterId == null
+            || !encounterResolution.hasPendingSignals())
         {
             return;
         }
-
-        pendingKill = null;
 
         Player localPlayer = client.getLocalPlayer();
-        boolean playerDiedDuringWindow =
-            lastPlayerDeathTick >= candidate.observedTick;
-        boolean playerIsDead =
-            localPlayer != null && localPlayer.getHealthRatio() == 0;
+        boolean playerAlive = localPlayer != null
+            && localPlayer.getHealthRatio() != 0;
 
-        if (!config.automaticKills()
-            || localPlayer == null
-            || client.getGameState() != GameState.LOGGED_IN
-            || playerDiedDuringWindow
-            || playerIsDead)
+        Optional<EncounterOutcome> outcome =
+            encounterResolution.resolve(gameTickCounter, playerAlive);
+
+        if (!outcome.isPresent())
         {
-            log.debug(
-                "Discarded pending boss kill for {} because the player died",
-                candidate.attribution.getBossName());
-
-            encounterTracker.reset();
-            syncEncounterToPanel();
             return;
         }
 
-        recordAutomaticKill(candidate.attribution);
+        String signal = encounterResolution.completionSignal();
+        EncounterOutcome resolved = outcome.get();
 
-        // A confirmed kill closes this encounter. Any subsequent fight must
-        // establish a fresh interaction.
+        store.completeEncounter(
+            activeEncounterId,
+            resolved,
+            signal,
+            "Resolved after "
+                + ENCOUNTER_RESOLUTION_DELAY_TICKS
+                + " game ticks",
+            config.automaticKills(),
+            config.automaticDeaths());
+
+        log.debug(
+            "Completed encounter {} as {} using {}",
+            activeEncounterId,
+            resolved,
+            signal);
+
+        resetEncounterResolutionState();
         encounterTracker.reset();
         syncEncounterToPanel();
-    }
-
-    private void recordAutomaticDeath(
-        BossEncounterTracker.Attribution attribution)
-    {
-        String note =
-            "Automatically attributed to "
-                + attribution.getBossName()
-                + " (NPC ID "
-                + attribution.getNpcId()
-                + ")";
-
-        store.addAutomaticDeath(
-            attribution.getBossId(),
-            note);
-        store.markDeathVerified(attribution.getBossId());
-
-        log.debug(
-            "Automatically recorded player death to {} (NPC ID {})",
-            attribution.getBossName(),
-            attribution.getNpcId());
-
         refreshPanel();
     }
 
-    private void recordAutomaticKill(
+    private boolean confirmKillCountProgress()
+    {
+        if (!config.automaticKills()
+            || activeEncounterId == null
+            || activeEncounterBossId == null)
+        {
+            return false;
+        }
+
+        BossProfile boss = store.findBoss(activeEncounterBossId)
+            .orElse(null);
+        Integer cachedKc = store.getCachedRuneLiteKillCount(boss);
+
+        if (cachedKc == null)
+        {
+            return false;
+        }
+
+        if (activeEncounterStartingKc == null)
+        {
+            activeEncounterStartingKc = cachedKc;
+            return false;
+        }
+
+        if (cachedKc > activeEncounterStartingKc)
+        {
+            encounterResolution.confirmKillCount(gameTickCounter);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void ensureActiveEncounter(
         BossEncounterTracker.Attribution attribution)
     {
-        String note =
-            "Automatically recorded boss kill for "
-                + attribution.getBossName()
-                + " (NPC ID "
-                + attribution.getNpcId()
-                + ")";
+        if (attribution == null)
+        {
+            return;
+        }
 
-        store.addAutomaticKill(
+        if (activeEncounterId != null
+            && attribution.getBossId().equals(activeEncounterBossId))
+        {
+            pendingAttribution = attribution;
+            return;
+        }
+
+        if (activeEncounterId != null)
+        {
+            store.abandonEncounter(
+                activeEncounterId,
+                EncounterOutcome.ABANDONED,
+                "A different boss encounter became active");
+        }
+
+        encounterResolution.reset();
+        activeEncounterBossId = attribution.getBossId();
+        activeEncounterId = store.beginEncounter(
             attribution.getBossId(),
-            note);
-        store.markKillVerified(attribution.getBossId());
-
-        log.debug(
-            "Automatically recorded boss kill for {} (NPC ID {})",
             attribution.getBossName(),
-            attribution.getNpcId());
+            attribution.getNpcId(),
+            Instant.now());
+        pendingAttribution = attribution;
 
-        refreshPanel();
+        BossProfile boss = store.findBoss(activeEncounterBossId)
+            .orElse(null);
+        activeEncounterStartingKc =
+            store.getCachedRuneLiteKillCount(boss);
+    }
+
+    private void abandonActiveEncounter(
+        EncounterOutcome outcome,
+        String note)
+    {
+        if (activeEncounterId != null)
+        {
+            store.abandonEncounter(
+                activeEncounterId,
+                outcome,
+                note);
+        }
+
+        resetEncounterResolutionState();
+    }
+
+    private void closeExpiredEncounterIfNeeded()
+    {
+        if (activeEncounterId != null
+            && encounterTracker.getActiveBossId() == null
+            && !encounterResolution.hasPendingSignals())
+        {
+            abandonActiveEncounter(
+                EncounterOutcome.ABANDONED,
+                "Encounter timed out without a terminal signal");
+            syncEncounterToPanel();
+            refreshPanel();
+        }
+    }
+
+    private void resetEncounterResolutionState()
+    {
+        encounterResolution.reset();
+        activeEncounterId = null;
+        activeEncounterBossId = null;
+        activeEncounterStartingKc = null;
+        pendingAttribution = null;
     }
 
     private boolean handleKdCommandInput(ChatInput chatInput, String message)
@@ -769,6 +842,8 @@ public class BossDeathTrackerPlugin extends Plugin
         {
             recentBossId = activeBossId;
             recentBossTick = gameTickCounter;
+            encounterTracker.getCurrentAttribution(gameTickCounter)
+                .ifPresent(this::ensureActiveEncounter);
         }
 
         if (!java.util.Objects.equals(lastPanelActiveBossId, activeBossId))
@@ -802,6 +877,7 @@ public class BossDeathTrackerPlugin extends Plugin
 
         if (state == GameState.LOGGED_IN)
         {
+            sessionStartedAt = Instant.now();
             loadCurrentProfileData();
             return;
         }
@@ -810,27 +886,14 @@ public class BossDeathTrackerPlugin extends Plugin
             || state == GameState.HOPPING
             || state == GameState.CONNECTION_LOST)
         {
+            abandonActiveEncounter(
+                EncounterOutcome.DISCONNECTED,
+                "Game state changed to " + state);
             encounterTracker.reset();
             recentBossId = null;
             recentBossTick = -1;
-            pendingKill = null;
-            lastPlayerDeathTick = -1;
             lastLocalShare = null;
             syncEncounterToPanel();
-        }
-    }
-
-    private static final class PendingKill
-    {
-        private final BossEncounterTracker.Attribution attribution;
-        private final int observedTick;
-
-        private PendingKill(
-            BossEncounterTracker.Attribution attribution,
-            int observedTick)
-        {
-            this.attribution = attribution;
-            this.observedTick = observedTick;
         }
     }
 

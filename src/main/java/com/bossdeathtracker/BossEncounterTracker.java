@@ -145,6 +145,25 @@ public class BossEncounterTracker
         return activeBossId;
     }
 
+    public Optional<Attribution> getCurrentAttribution(int currentTick)
+    {
+        if (activeBossId == null || lastConfirmedTick < 0)
+        {
+            return Optional.empty();
+        }
+
+        if (currentTick - lastConfirmedTick > ENCOUNTER_TIMEOUT_TICKS)
+        {
+            reset();
+            return Optional.empty();
+        }
+
+        return Optional.of(new Attribution(
+            activeBossId,
+            activeBossName,
+            activeBossNpcId));
+    }
+
     public Optional<Attribution> getKillAttribution(
         NPC deadNpc,
         BossDeathTrackerStore store,

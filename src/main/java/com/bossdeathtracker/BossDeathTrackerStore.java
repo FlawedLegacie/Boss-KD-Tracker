@@ -592,6 +592,23 @@ public class BossDeathTrackerStore
         String completionSignal,
         String note)
     {
+        completeEncounter(
+            encounterId,
+            outcome,
+            completionSignal,
+            note,
+            true,
+            true);
+    }
+
+    public synchronized void completeEncounter(
+        String encounterId,
+        EncounterOutcome outcome,
+        String completionSignal,
+        String note,
+        boolean recordKill,
+        boolean recordDeath)
+    {
         EncounterAttempt attempt = findAttemptLocked(encounterId);
         if (attempt == null || attempt.isCompleted())
         {
@@ -611,7 +628,8 @@ public class BossDeathTrackerStore
         BossProfile boss = requireBoss(attempt.getBossId());
         boss.markEncounterVerified();
 
-        if (resolved.countsKill()
+        if (recordKill
+            && resolved.countsKill()
             && !hasEncounterEventLocked(
                 encounterId,
                 TrackerEventType.KILL))
@@ -628,7 +646,8 @@ public class BossDeathTrackerStore
             boss.markKillVerified();
         }
 
-        if (resolved.countsDeath()
+        if (recordDeath
+            && resolved.countsDeath()
             && !hasEncounterEventLocked(
                 encounterId,
                 TrackerEventType.DEATH))
