@@ -5,7 +5,9 @@ import java.util.List;
 
 public class TrackerData
 {
-    private int schemaVersion = 1;
+    public static final int CURRENT_SCHEMA_VERSION = 2;
+
+    private int schemaVersion = CURRENT_SCHEMA_VERSION;
     private List<BossProfile> bosses = new ArrayList<>();
     private List<TrackerEvent> events = new ArrayList<>();
 
@@ -30,5 +32,16 @@ public class TrackerData
             events = new ArrayList<>();
         }
         return events;
+    }
+
+    /**
+     * Normalize data loaded from older JSON schemas. Gson initializes missing
+     * primitive fields to zero, so migration must be explicit.
+     */
+    public void migrateToCurrent()
+    {
+        getBosses();
+        getEvents();
+        schemaVersion = CURRENT_SCHEMA_VERSION;
     }
 }
