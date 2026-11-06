@@ -308,6 +308,38 @@ public class BossDeathTrackerStore
         queueSave();
     }
 
+    public synchronized Integer getCachedRuneLiteKillCount(
+        BossProfile boss)
+    {
+        if (boss == null
+            || configManager == null
+            || configManager.getRSProfileKey() == null)
+        {
+            return null;
+        }
+
+        Integer cachedKc = null;
+
+        for (String killcountKey :
+            BossNameResolver.runeLiteKillcountKeys(boss))
+        {
+            Integer candidate =
+                configManager.getRSProfileConfiguration(
+                    "killcount",
+                    killcountKey,
+                    int.class);
+
+            if (candidate != null
+                && candidate >= 0
+                && (cachedKc == null || candidate > cachedKc))
+            {
+                cachedKc = candidate;
+            }
+        }
+
+        return cachedKc;
+    }
+
     public synchronized HistoricalKillSyncResult syncRuneLiteKillCounts(
         ConfigManager sourceConfigManager)
     {
@@ -525,6 +557,186 @@ public class BossDeathTrackerStore
         return result;
     }
 
+    public synchronized String beginEncounter(
+        String bossId,
+        String bossName,
+        int npcId,
+        Instant startedAt)
+    {
+        requireBoss(bossId);
+
+        for (int index = data.getAttempts().size() - 1; index >= 0; index--)
+        {
+            EncounterAttempt existing = data.getAttempts().get(index);
+            if (existing != null
+                && !existing.isCompleted()
+                && bossId.equals(existing.getBossId()))
+            {
+                return existing.getId();
+            }
+        }
+
+        EncounterAttempt attempt = EncounterAttempt.start(
+            bossId,
+            bossName,
+            npcId,
+            startedAt);
+        data.getAttempts().add(attempt);
+        queueSave();
+        return attempt.getId();
+    }
+
+    public synchronized void completeEncounter(
+        String encounterId,
+        EncounterOutcome outcome,
+        String completionSignal,
+        String note)
+    {
+        EncounterAttempt attempt = findAttemptLocked(encounterId);
+        if (attempt == null || attempt.isCompleted())
+        {
+            return;
+        }
+
+        EncounterOutcome resolved = outcome == null
+            ? EncounterOutcome.ABANDONED
+            : outcome;
+        Instant endedAt = Instant.now();
+        attempt.complete(
+            resolved,
+            endedAt,
+            completionSignal,
+            note);
+
+        BossProfile boss = requireBoss(attempt.getBossId());
+        boss.markEncounterVerified();
+
+        if (resolved.countsKill()
+            && !hasEncounterEventLocked(
+                encounterId,
+                TrackerEventType.KILL))
+        {
+            data.getEvents().add(TrackerEvent.createAt(
+                encounterId,
+                attempt.getBossId(),
+                TrackerEventType.KILL,
+                TrackerEventSource.AUTOMATIC,
+                1,
+                "Encounter outcome " + resolved
+                    + "; signal: " + safe(completionSignal),
+                endedAt));
+            boss.markKillVerified();
+        }
+
+        if (resolved.countsDeath()
+            && !hasEncounterEventLocked(
+                encounterId,
+                TrackerEventType.DEATH))
+        {
+            data.getEvents().add(TrackerEvent.createAt(
+                encounterId,
+                attempt.getBossId(),
+                TrackerEventType.DEATH,
+                TrackerEventSource.AUTOMATIC,
+                1,
+                "Encounter outcome " + resolved
+                    + "; signal: " + safe(completionSignal),
+                endedAt));
+            boss.markDeathVerified();
+        }
+
+        queueSave();
+    }
+
+    public synchronized void abandonEncounter(
+        String encounterId,
+        EncounterOutcome outcome,
+        String note)
+    {
+        EncounterOutcome resolved = outcome == EncounterOutcome.DISCONNECTED
+            ? EncounterOutcome.DISCONNECTED
+            : EncounterOutcome.ABANDONED;
+        completeEncounter(
+            encounterId,
+            resolved,
+            resolved.name(),
+            note);
+    }
+
+    public synchronized List<EncounterAttempt> getAttemptsForBoss(
+        String bossId)
+    {
+        List<EncounterAttempt> result = new ArrayList<>();
+
+        for (EncounterAttempt attempt : data.getAttempts())
+        {
+            if (attempt != null && bossId.equals(attempt.getBossId()))
+            {
+                result.add(attempt);
+            }
+        }
+
+        result.sort(Comparator.comparing(
+            EncounterAttempt::getStartedAt,
+            Comparator.nullsLast(Comparator.reverseOrder())));
+        return result;
+    }
+
+    public synchronized List<EncounterAttempt> getAllAttempts()
+    {
+        return new ArrayList<>(data.getAttempts());
+    }
+
+    public synchronized BossStatistics getBossStatistics(String bossId)
+    {
+        return BossStatistics.calculate(bossId, data.getAttempts());
+    }
+
+    public synchronized SessionStatistics getSessionStatistics(
+        Instant sessionStartedAt)
+    {
+        return SessionStatistics.calculate(
+            sessionStartedAt,
+            data.getAttempts());
+    }
+
+    private EncounterAttempt findAttemptLocked(String encounterId)
+    {
+        if (encounterId == null)
+        {
+            return null;
+        }
+
+        for (EncounterAttempt attempt : data.getAttempts())
+        {
+            if (attempt != null && encounterId.equals(attempt.getId()))
+            {
+                return attempt;
+            }
+        }
+
+        return null;
+    }
+
+    private boolean hasEncounterEventLocked(
+        String encounterId,
+        TrackerEventType type)
+    {
+        for (TrackerEvent event : data.getEvents())
+        {
+            if (event != null
+                && encounterId != null
+                && encounterId.equals(event.getEncounterId())
+                && type == event.getType()
+                && event.getAmount() > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public synchronized void markEncounterVerified(String bossId)
     {
         BossProfile boss = requireBoss(bossId);
@@ -591,6 +803,8 @@ public class BossDeathTrackerStore
     {
         data.getBosses().removeIf(boss -> boss.getId().equals(bossId));
         data.getEvents().removeIf(event -> event.getBossId().equals(bossId));
+        data.getAttempts().removeIf(
+            attempt -> bossId.equals(attempt.getBossId()));
         queueSave();
     }
 
@@ -709,6 +923,8 @@ public class BossDeathTrackerStore
         boolean migrated = migrateLegacyIfNeeded(storageKey, targetFile);
         LoadResult loadResult = loadWithRecovery(targetFile);
 
+        boolean staleAttemptsClosed;
+
         synchronized (this)
         {
             data = loadResult.data;
@@ -717,9 +933,13 @@ public class BossDeathTrackerStore
             activeDataFile = targetFile;
             loaded = true;
             seedBuiltInDefinitionsLocked();
+            staleAttemptsClosed = closeStaleAttemptsLocked();
         }
 
-        if (migrated || loadResult.recovered || !loadResult.existed)
+        if (migrated
+            || loadResult.recovered
+            || !loadResult.existed
+            || staleAttemptsClosed)
         {
             flush();
         }
@@ -838,6 +1058,27 @@ public class BossDeathTrackerStore
             new TrackerData(),
             failure != null,
             existed);
+    }
+
+    private boolean closeStaleAttemptsLocked()
+    {
+        boolean changed = false;
+        Instant now = Instant.now();
+
+        for (EncounterAttempt attempt : data.getAttempts())
+        {
+            if (attempt != null && !attempt.isCompleted())
+            {
+                attempt.complete(
+                    EncounterOutcome.DISCONNECTED,
+                    now,
+                    "PROFILE_RELOAD",
+                    "Recovered unfinished attempt after reload");
+                changed = true;
+            }
+        }
+
+        return changed;
     }
 
     private void preserveCorruptPrimary(Path targetFile)
