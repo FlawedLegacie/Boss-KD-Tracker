@@ -123,12 +123,19 @@ public class BossDeathTrackerPlugin extends Plugin
             this::handleKdCommandLookup,
             this::handleKdCommandInput);
 
-        store.loadAsync(error ->
+        loadCurrentProfileData();
+    }
+
+    private void loadCurrentProfileData()
+    {
+        store.loadCurrentProfileAsync(error ->
             SwingUtilities.invokeLater(() ->
             {
                 if (error != null)
                 {
-                    log.warn("Boss Death Tracker data load completed with an error", error);
+                    log.warn(
+                        "Boss Death Tracker profile load completed with an error",
+                        error);
                 }
 
                 BossDeathTrackerStore.HistoricalKillSyncResult syncResult =
@@ -792,6 +799,12 @@ public class BossDeathTrackerPlugin extends Plugin
     public void onGameStateChanged(GameStateChanged event)
     {
         GameState state = event.getGameState();
+
+        if (state == GameState.LOGGED_IN)
+        {
+            loadCurrentProfileData();
+            return;
+        }
 
         if (state == GameState.LOGIN_SCREEN
             || state == GameState.HOPPING
