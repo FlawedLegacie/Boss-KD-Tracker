@@ -67,6 +67,7 @@ public final class SessionStatistics
             for (EncounterAttempt attempt : source)
             {
                 if (attempt != null
+                    && !attempt.isVoided()
                     && attempt.getStartedAt() != null
                     && !attempt.getStartedAt().isBefore(start))
                 {
