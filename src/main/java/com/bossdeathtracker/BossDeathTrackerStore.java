@@ -7,13 +7,17 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import net.runelite.client.RuneLite;
 import net.runelite.client.config.ConfigManager;
@@ -22,59 +26,69 @@ import org.slf4j.LoggerFactory;
 
 public class BossDeathTrackerStore
 {
-    private static final Logger log = LoggerFactory.getLogger(BossDeathTrackerStore.class);
+    private static final Logger log =
+        LoggerFactory.getLogger(BossDeathTrackerStore.class);
 
     private static final Path DATA_DIR =
         RuneLite.RUNELITE_DIR.toPath().resolve("boss-death-tracker");
+    private static final Path PROFILES_DIR = DATA_DIR.resolve("profiles");
+    private static final Path LEGACY_DATA_FILE =
+        DATA_DIR.resolve("tracker-data.json");
+    private static final Path LEGACY_MIGRATION_MARKER =
+        DATA_DIR.resolve(".legacy-profile-migrated");
 
-    private static final Path DATA_FILE = DATA_DIR.resolve("tracker-data.json");
-    private static final Path TEMP_FILE = DATA_DIR.resolve("tracker-data.json.tmp");
+    private static final int BACKUP_COUNT = 3;
+    private static final long SAVE_DELAY_MILLIS = 250L;
+    private static final Duration AUTOMATIC_EVENT_DEDUP_WINDOW =
+        Duration.ofSeconds(5);
 
     private final Gson gson;
-    private ExecutorService ioExecutor;
+    private final ConfigManager configManager;
+    private final Object ioLock = new Object();
 
+    private ScheduledExecutorService ioExecutor;
+    private ScheduledFuture<?> pendingSave;
     private TrackerData data = new TrackerData();
+    private Path activeDataFile = LEGACY_DATA_FILE;
+    private String activeStorageKey = "legacy";
+    private boolean loaded;
 
     @Inject
-    public BossDeathTrackerStore(Gson gson)
+    public BossDeathTrackerStore(
+        Gson gson,
+        ConfigManager configManager)
     {
         this.gson = gson;
+        this.configManager = configManager;
     }
 
     public void loadAsync(Consumer<Throwable> completion)
     {
+        loadCurrentProfileAsync(completion);
+    }
+
+    public void loadCurrentProfileAsync(Consumer<Throwable> completion)
+    {
+        String profileKey =
+            configManager == null ? null : configManager.getRSProfileKey();
+        String storageKey = ProfileStorageKey.from(profileKey);
+        Path targetFile = resolveDataFile(storageKey);
+
         ensureExecutor().execute(() ->
         {
             Throwable error = null;
 
             try
             {
-                Files.createDirectories(DATA_DIR);
-
-                if (Files.exists(DATA_FILE))
-                {
-                    String json = Files.readString(DATA_FILE, StandardCharsets.UTF_8);
-                    TrackerData loaded = gson.fromJson(json, TrackerData.class);
-
-                    synchronized (this)
-                    {
-                        data = loaded == null ? new TrackerData() : loaded;
-                        seedBuiltInDefinitionsLocked();
-                    }
-                }
-                else
-                {
-                    synchronized (this)
-                    {
-                        seedBuiltInDefinitionsLocked();
-                    }
-                    queueSave();
-                }
+                switchProfile(storageKey, targetFile);
             }
             catch (Exception ex)
             {
                 error = ex;
-                log.warn("Unable to load Boss Death Tracker data", ex);
+                log.warn(
+                    "Unable to load Boss Death Tracker profile {}",
+                    storageKey,
+                    ex);
             }
 
             if (completion != null)
@@ -82,6 +96,11 @@ public class BossDeathTrackerStore
                 completion.accept(error);
             }
         });
+    }
+
+    public synchronized String getActiveStorageKey()
+    {
+        return activeStorageKey;
     }
 
     public synchronized List<BossProfile> getBosses()
@@ -163,7 +182,8 @@ public class BossDeathTrackerStore
         {
             if (existing.getDisplayName().equalsIgnoreCase(cleanName))
             {
-                throw new IllegalArgumentException("A boss with that name already exists.");
+                throw new IllegalArgumentException(
+                    "A boss with that name already exists.");
             }
         }
 
@@ -181,27 +201,22 @@ public class BossDeathTrackerStore
 
     public synchronized void addDeath(String bossId)
     {
-        addDeath(bossId, TrackerEventSource.MANUAL, "");
+        addEvent(
+            bossId,
+            TrackerEventType.DEATH,
+            TrackerEventSource.MANUAL,
+            1,
+            "");
     }
 
     public synchronized void addAutomaticDeath(String bossId, String note)
     {
-        addDeath(bossId, TrackerEventSource.AUTOMATIC, note);
-    }
-
-    private synchronized void addDeath(
-        String bossId,
-        TrackerEventSource source,
-        String note)
-    {
-        requireBoss(bossId);
-        data.getEvents().add(TrackerEvent.create(
+        addEvent(
             bossId,
             TrackerEventType.DEATH,
-            source,
+            TrackerEventSource.AUTOMATIC,
             1,
-            note));
-        queueSave();
+            note);
     }
 
     public synchronized void removeDeath(String bossId)
@@ -213,38 +228,32 @@ public class BossDeathTrackerStore
             return;
         }
 
-        data.getEvents().add(TrackerEvent.create(
+        addEvent(
             bossId,
             TrackerEventType.DEATH,
             TrackerEventSource.CORRECTED,
             -1,
-            "Manual death correction"));
-        queueSave();
+            "Manual death correction");
     }
 
     public synchronized void addKill(String bossId)
     {
-        addKill(bossId, TrackerEventSource.MANUAL, "");
+        addEvent(
+            bossId,
+            TrackerEventType.KILL,
+            TrackerEventSource.MANUAL,
+            1,
+            "");
     }
 
     public synchronized void addAutomaticKill(String bossId, String note)
     {
-        addKill(bossId, TrackerEventSource.AUTOMATIC, note);
-    }
-
-    private synchronized void addKill(
-        String bossId,
-        TrackerEventSource source,
-        String note)
-    {
-        requireBoss(bossId);
-        data.getEvents().add(TrackerEvent.create(
+        addEvent(
             bossId,
             TrackerEventType.KILL,
-            source,
+            TrackerEventSource.AUTOMATIC,
             1,
-            note));
-        queueSave();
+            note);
     }
 
     public synchronized void removeKill(String bossId)
@@ -256,23 +265,58 @@ public class BossDeathTrackerStore
             return;
         }
 
-        data.getEvents().add(TrackerEvent.create(
+        addEvent(
             bossId,
             TrackerEventType.KILL,
             TrackerEventSource.CORRECTED,
             -1,
-            "Manual kill correction"));
+            "Manual kill correction");
+    }
+
+    private void addEvent(
+        String bossId,
+        TrackerEventType type,
+        TrackerEventSource source,
+        int amount,
+        String note)
+    {
+        requireBoss(bossId);
+        Instant now = Instant.now();
+
+        if (source == TrackerEventSource.AUTOMATIC
+            && TrackerEventPolicy.isDuplicateAutomaticEvent(
+                data.getEvents(),
+                bossId,
+                type,
+                now,
+                AUTOMATIC_EVENT_DEDUP_WINDOW))
+        {
+            log.debug(
+                "Suppressed duplicate automatic {} event for {}",
+                type,
+                bossId);
+            return;
+        }
+
+        data.getEvents().add(TrackerEvent.createAt(
+            bossId,
+            type,
+            source,
+            amount,
+            note,
+            now));
         queueSave();
     }
 
     public synchronized HistoricalKillSyncResult syncRuneLiteKillCounts(
-        ConfigManager configManager)
+        ConfigManager sourceConfigManager)
     {
         int bossesWithCachedKc = 0;
         int bossesUpdated = 0;
         int killsImported = 0;
 
-        if (configManager == null || configManager.getRSProfileKey() == null)
+        if (sourceConfigManager == null
+            || sourceConfigManager.getRSProfileKey() == null)
         {
             return new HistoricalKillSyncResult(
                 0,
@@ -287,12 +331,14 @@ public class BossDeathTrackerStore
             Integer cachedKc = null;
             String matchedKey = null;
 
-            for (String killcountKey : BossNameResolver.runeLiteKillcountKeys(boss))
+            for (String killcountKey :
+                BossNameResolver.runeLiteKillcountKeys(boss))
             {
-                Integer candidate = configManager.getRSProfileConfiguration(
-                    "killcount",
-                    killcountKey,
-                    int.class);
+                Integer candidate =
+                    sourceConfigManager.getRSProfileConfiguration(
+                        "killcount",
+                        killcountKey,
+                        int.class);
 
                 if (candidate != null
                     && candidate >= 0
@@ -312,10 +358,6 @@ public class BossDeathTrackerStore
 
             int currentKills = getKillCount(boss.getId());
 
-            // RuneLite's cached KC is treated as a historical floor. We only
-            // add the missing difference. This makes repeated synchronization
-            // idempotent and never erases kills Boss Death Tracker has already
-            // recorded live.
             if (cachedKc > currentKills)
             {
                 int delta = cachedKc - currentKills;
@@ -421,7 +463,8 @@ public class BossDeathTrackerStore
                 bestDeaths = deaths;
             }
             else if (deaths == bestDeaths && deaths > 0 && best != null
-                && boss.getDisplayName().compareToIgnoreCase(best.getDisplayName()) < 0)
+                && boss.getDisplayName()
+                    .compareToIgnoreCase(best.getDisplayName()) < 0)
             {
                 best = boss;
             }
@@ -445,7 +488,8 @@ public class BossDeathTrackerStore
                 bestKills = kills;
             }
             else if (kills == bestKills && kills > 0 && best != null
-                && boss.getDisplayName().compareToIgnoreCase(best.getDisplayName()) < 0)
+                && boss.getDisplayName()
+                    .compareToIgnoreCase(best.getDisplayName()) < 0)
             {
                 best = boss;
             }
@@ -476,7 +520,8 @@ public class BossDeathTrackerStore
             }
         }
 
-        result.sort(Comparator.comparing(TrackerEvent::getTimestamp).reversed());
+        result.sort(
+            Comparator.comparing(TrackerEvent::getTimestamp).reversed());
         return result;
     }
 
@@ -529,7 +574,8 @@ public class BossDeathTrackerStore
             if (!existing.getId().equals(bossId)
                 && existing.getDisplayName().equalsIgnoreCase(cleanName))
             {
-                throw new IllegalArgumentException("A boss with that name already exists.");
+                throw new IllegalArgumentException(
+                    "A boss with that name already exists.");
             }
         }
 
@@ -570,11 +616,13 @@ public class BossDeathTrackerStore
                 .stream()
                 .anyMatch(boss ->
                     definition.getKey().equals(boss.getDefinitionKey())
-                    || boss.getDisplayName().equalsIgnoreCase(definition.getDisplayName()));
+                    || boss.getDisplayName().equalsIgnoreCase(
+                        definition.getDisplayName()));
 
             if (!exists)
             {
-                data.getBosses().add(BossProfile.createFromDefinition(definition));
+                data.getBosses().add(
+                    BossProfile.createFromDefinition(definition));
                 added++;
             }
         }
@@ -582,22 +630,244 @@ public class BossDeathTrackerStore
         return added;
     }
 
-    public synchronized void shutdown()
+    public void flush()
     {
-        if (ioExecutor != null)
+        final Path file;
+        final String json;
+
+        synchronized (this)
         {
-            ioExecutor.shutdownNow();
-            ioExecutor = null;
+            if (!loaded || activeDataFile == null)
+            {
+                return;
+            }
+
+            if (pendingSave != null)
+            {
+                pendingSave.cancel(false);
+                pendingSave = null;
+            }
+
+            data.migrateToCurrent();
+            file = activeDataFile;
+            json = gson.toJson(data);
         }
+
+        writeSnapshot(file, json);
+    }
+
+    public void shutdown()
+    {
+        flush();
+
+        ScheduledExecutorService executor;
+
+        synchronized (this)
+        {
+            executor = ioExecutor;
+            ioExecutor = null;
+            pendingSave = null;
+        }
+
+        if (executor == null)
+        {
+            return;
+        }
+
+        executor.shutdown();
+
+        try
+        {
+            if (!executor.awaitTermination(2, TimeUnit.SECONDS))
+            {
+                executor.shutdownNow();
+            }
+        }
+        catch (InterruptedException ex)
+        {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        }
+    }
+
+    private void switchProfile(
+        String storageKey,
+        Path targetFile)
+        throws IOException
+    {
+        synchronized (this)
+        {
+            if (loaded && storageKey.equals(activeStorageKey))
+            {
+                return;
+            }
+        }
+
+        flush();
+        Files.createDirectories(DATA_DIR);
+
+        boolean migrated = migrateLegacyIfNeeded(storageKey, targetFile);
+        LoadResult loadResult = loadWithRecovery(targetFile);
+
+        synchronized (this)
+        {
+            data = loadResult.data;
+            data.migrateToCurrent();
+            activeStorageKey = storageKey;
+            activeDataFile = targetFile;
+            loaded = true;
+            seedBuiltInDefinitionsLocked();
+        }
+
+        if (migrated || loadResult.recovered || !loadResult.existed)
+        {
+            flush();
+        }
+
+        log.info(
+            "Loaded Boss Death Tracker storage profile {}",
+            storageKey);
+    }
+
+    private boolean migrateLegacyIfNeeded(
+        String storageKey,
+        Path targetFile)
+        throws IOException
+    {
+        if ("legacy".equals(storageKey)
+            || Files.exists(targetFile)
+            || Files.exists(LEGACY_MIGRATION_MARKER)
+            || !Files.exists(LEGACY_DATA_FILE))
+        {
+            return false;
+        }
+
+        Files.createDirectories(targetFile.getParent());
+        Files.copy(
+            LEGACY_DATA_FILE,
+            targetFile,
+            StandardCopyOption.REPLACE_EXISTING);
+
+        Path migratedBackup =
+            DATA_DIR.resolve("tracker-data.legacy-migrated.json");
+        Files.move(
+            LEGACY_DATA_FILE,
+            migratedBackup,
+            StandardCopyOption.REPLACE_EXISTING);
+
+        Files.writeString(
+            LEGACY_MIGRATION_MARKER,
+            storageKey,
+            StandardCharsets.UTF_8);
+
+        log.info(
+            "Migrated legacy Boss Death Tracker data into profile {}",
+            storageKey);
+        return true;
+    }
+
+    private LoadResult loadWithRecovery(Path targetFile)
+        throws IOException
+    {
+        boolean existed = Files.exists(targetFile);
+        IOException failure = null;
+
+        for (int index = 0; index <= BACKUP_COUNT; index++)
+        {
+            Path candidate =
+                index == 0 ? targetFile : backupPath(targetFile, index);
+
+            if (!Files.exists(candidate))
+            {
+                continue;
+            }
+
+            try
+            {
+                String json =
+                    Files.readString(candidate, StandardCharsets.UTF_8);
+                TrackerData loadedData =
+                    gson.fromJson(json, TrackerData.class);
+
+                if (loadedData == null)
+                {
+                    throw new IOException(
+                        "Tracker data was empty: " + candidate);
+                }
+
+                loadedData.migrateToCurrent();
+
+                if (index > 0)
+                {
+                    preserveCorruptPrimary(targetFile);
+                    Files.copy(
+                        candidate,
+                        targetFile,
+                        StandardCopyOption.REPLACE_EXISTING);
+                    log.warn(
+                        "Recovered Boss Death Tracker data from backup {}",
+                        candidate.getFileName());
+                }
+
+                return new LoadResult(
+                    loadedData,
+                    index > 0,
+                    existed);
+            }
+            catch (Exception ex)
+            {
+                failure = new IOException(
+                    "Unable to read tracker data from " + candidate,
+                    ex);
+                log.warn(
+                    "Unable to read Boss Death Tracker data from {}",
+                    candidate,
+                    ex);
+            }
+        }
+
+        if (existed && failure != null)
+        {
+            preserveCorruptPrimary(targetFile);
+            log.warn(
+                "All Boss Death Tracker backups were unreadable; "
+                    + "starting a clean profile");
+        }
+
+        return new LoadResult(
+            new TrackerData(),
+            failure != null,
+            existed);
+    }
+
+    private void preserveCorruptPrimary(Path targetFile)
+        throws IOException
+    {
+        if (!Files.exists(targetFile))
+        {
+            return;
+        }
+
+        String fileName = targetFile.getFileName().toString();
+        Path corruptFile = targetFile.resolveSibling(
+            fileName + ".corrupt-" + System.currentTimeMillis());
+
+        Files.move(
+            targetFile,
+            corruptFile,
+            StandardCopyOption.REPLACE_EXISTING);
     }
 
     private synchronized BossProfile requireBoss(String bossId)
     {
         return findBoss(bossId)
-            .orElseThrow(() -> new IllegalArgumentException("Boss not found: " + bossId));
+            .orElseThrow(() ->
+                new IllegalArgumentException("Boss not found: " + bossId));
     }
 
-    private synchronized int sumEvents(String bossId, TrackerEventType type)
+    private synchronized int sumEvents(
+        String bossId,
+        TrackerEventType type)
     {
         int total = 0;
 
@@ -621,52 +891,131 @@ public class BossDeathTrackerStore
 
     private void queueSave()
     {
+        final Path file;
         final String json;
 
         synchronized (this)
         {
-            json = gson.toJson(data);
-        }
+            if (!loaded || activeDataFile == null)
+            {
+                return;
+            }
 
-        ensureExecutor().execute(() ->
+            data.migrateToCurrent();
+            file = activeDataFile;
+            json = gson.toJson(data);
+
+            if (pendingSave != null)
+            {
+                pendingSave.cancel(false);
+            }
+
+            pendingSave = ensureExecutor().schedule(
+                () -> writeSnapshot(file, json),
+                SAVE_DELAY_MILLIS,
+                TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void writeSnapshot(Path file, String json)
+    {
+        synchronized (ioLock)
         {
             try
             {
-                Files.createDirectories(DATA_DIR);
-                Files.writeString(TEMP_FILE, json, StandardCharsets.UTF_8);
+                Files.createDirectories(file.getParent());
+                rotateBackups(file);
+
+                Path tempFile = file.resolveSibling(
+                    file.getFileName().toString() + ".tmp");
+
+                Files.writeString(
+                    tempFile,
+                    json,
+                    StandardCharsets.UTF_8);
 
                 try
                 {
                     Files.move(
-                        TEMP_FILE,
-                        DATA_FILE,
+                        tempFile,
+                        file,
                         StandardCopyOption.REPLACE_EXISTING,
                         StandardCopyOption.ATOMIC_MOVE);
                 }
                 catch (IOException atomicMoveFailure)
                 {
                     Files.move(
-                        TEMP_FILE,
-                        DATA_FILE,
+                        tempFile,
+                        file,
                         StandardCopyOption.REPLACE_EXISTING);
                 }
             }
             catch (IOException ex)
             {
-                log.warn("Unable to save Boss Death Tracker data", ex);
+                log.warn(
+                    "Unable to save Boss Death Tracker data to {}",
+                    file,
+                    ex);
             }
-        });
+        }
     }
 
-    private synchronized ExecutorService ensureExecutor()
+    private void rotateBackups(Path file)
+        throws IOException
+    {
+        if (!Files.exists(file))
+        {
+            return;
+        }
+
+        Files.deleteIfExists(backupPath(file, BACKUP_COUNT));
+
+        for (int index = BACKUP_COUNT - 1; index >= 1; index--)
+        {
+            Path source = backupPath(file, index);
+            if (Files.exists(source))
+            {
+                Files.move(
+                    source,
+                    backupPath(file, index + 1),
+                    StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+
+        Files.copy(
+            file,
+            backupPath(file, 1),
+            StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static Path backupPath(Path file, int index)
+    {
+        return file.resolveSibling(
+            file.getFileName().toString() + ".bak" + index);
+    }
+
+    private static Path resolveDataFile(String storageKey)
+    {
+        if ("legacy".equals(storageKey))
+        {
+            return LEGACY_DATA_FILE;
+        }
+
+        return PROFILES_DIR
+            .resolve(storageKey)
+            .resolve("tracker-data.json");
+    }
+
+    private synchronized ScheduledExecutorService ensureExecutor()
     {
         if (ioExecutor == null || ioExecutor.isShutdown())
         {
-            ioExecutor = Executors.newSingleThreadExecutor(r ->
+            ioExecutor = Executors.newSingleThreadScheduledExecutor(r ->
             {
-                Thread t = new Thread(r, "boss-death-tracker-storage");
-                t.setDaemon(true);
-                return t;
+                Thread thread =
+                    new Thread(r, "boss-death-tracker-storage");
+                thread.setDaemon(true);
+                return thread;
             });
         }
 
@@ -686,5 +1035,22 @@ public class BossDeathTrackerStore
     private static String safe(String value)
     {
         return value == null ? "" : value;
+    }
+
+    private static final class LoadResult
+    {
+        private final TrackerData data;
+        private final boolean recovered;
+        private final boolean existed;
+
+        private LoadResult(
+            TrackerData data,
+            boolean recovered,
+            boolean existed)
+        {
+            this.data = data;
+            this.recovered = recovered;
+            this.existed = existed;
+        }
     }
 }
