@@ -1,0 +1,140 @@
+name: Apply 0.10 encounter integration
+
+on:
+  push:
+    branches:
+      - release/0.10.0-encounters
+    paths:
+      - .github/workflows/apply-0.10-plugin.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/0.10.0-encounters
+
+      - name: Integrate encounter lifecycle
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          # Expose the current active attribution to the plugin.
+          tracker_path = Path('src/main/java/com/bossdeathtracker/BossEncounterTracker.java')
+          tracker = tracker_path.read_text(encoding='utf-8')
+          tracker_anchor = '''    public Optional<Attribution> getKillAttribution(\n        NPC deadNpc,\n'''
+          tracker_method = '''    public Optional<Attribution> getCurrentAttribution(int currentTick)\n    {\n        if (activeBossId == null || lastConfirmedTick < 0)\n        {\n            return Optional.empty();\n        }\n\n        if (currentTick - lastConfirmedTick > ENCOUNTER_TIMEOUT_TICKS)\n        {\n            reset();\n            return Optional.empty();\n        }\n\n        return Optional.of(new Attribution(\n            activeBossId,\n            activeBossName,\n            activeBossNpcId));\n    }\n\n'''
+          if tracker_anchor not in tracker:
+              raise SystemExit('Tracker attribution anchor not found')
+          tracker = tracker.replace(tracker_anchor, tracker_method + tracker_anchor, 1)
+          tracker_path.write_text(tracker, encoding='utf-8')
+
+          # Allow attempt outcomes to be persisted independently of count settings.
+          store_path = Path('src/main/java/com/bossdeathtracker/BossDeathTrackerStore.java')
+          store = store_path.read_text(encoding='utf-8')
+          pattern = re.compile(
+              r'    public synchronized void completeEncounter\(.*?\n    }\n\n(?=    public synchronized void abandonEncounter)',
+              re.S,
+          )
+          replacement = '''    public synchronized void completeEncounter(\n        String encounterId,\n        EncounterOutcome outcome,\n        String completionSignal,\n        String note)\n    {\n        completeEncounter(\n            encounterId,\n            outcome,\n            completionSignal,\n            note,\n            true,\n            true);\n    }\n\n    public synchronized void completeEncounter(\n        String encounterId,\n        EncounterOutcome outcome,\n        String completionSignal,\n        String note,\n        boolean recordKill,\n        boolean recordDeath)\n    {\n        EncounterAttempt attempt = findAttemptLocked(encounterId);\n        if (attempt == null || attempt.isCompleted())\n        {\n            return;\n        }\n\n        EncounterOutcome resolved = outcome == null\n            ? EncounterOutcome.ABANDONED\n            : outcome;\n        Instant endedAt = Instant.now();\n        attempt.complete(\n            resolved,\n            endedAt,\n            completionSignal,\n            note);\n\n        BossProfile boss = requireBoss(attempt.getBossId());\n        boss.markEncounterVerified();\n\n        if (recordKill\n            && resolved.countsKill()\n            && !hasEncounterEventLocked(\n                encounterId,\n                TrackerEventType.KILL))\n        {\n            data.getEvents().add(TrackerEvent.createAt(\n                encounterId,\n                attempt.getBossId(),\n                TrackerEventType.KILL,\n                TrackerEventSource.AUTOMATIC,\n                1,\n                "Encounter outcome " + resolved\n                    + "; signal: " + safe(completionSignal),\n                endedAt));\n            boss.markKillVerified();\n        }\n\n        if (recordDeath\n            && resolved.countsDeath()\n            && !hasEncounterEventLocked(\n                encounterId,\n                TrackerEventType.DEATH))\n        {\n            data.getEvents().add(TrackerEvent.createAt(\n                encounterId,\n                attempt.getBossId(),\n                TrackerEventType.DEATH,\n                TrackerEventSource.AUTOMATIC,\n                1,\n                "Encounter outcome " + resolved\n                    + "; signal: " + safe(completionSignal),\n                endedAt));\n            boss.markDeathVerified();\n        }\n\n        queueSave();\n    }\n\n'''
+          store, count = pattern.subn(replacement, store, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one completeEncounter block, found {count}')
+          store_path.write_text(store, encoding='utf-8')
+
+          plugin_path = Path('src/main/java/com/bossdeathtracker/BossDeathTrackerPlugin.java')
+          plugin = plugin_path.read_text(encoding='utf-8')
+
+          plugin = plugin.replace(
+              'import java.awt.image.BufferedImage;\nimport java.util.List;',
+              'import java.awt.image.BufferedImage;\nimport java.time.Instant;\nimport java.util.List;\nimport java.util.Optional;',
+              1,
+          )
+          plugin = plugin.replace(
+              '    private static final int KILL_CONFIRMATION_DELAY_TICKS = 2;',
+              '    private static final int ENCOUNTER_RESOLUTION_DELAY_TICKS = 3;',
+              1,
+          )
+
+          old_fields = '''    private String recentBossId;\n    private int recentBossTick = -1;\n    private PendingKill pendingKill;\n    private int lastPlayerDeathTick = -1;\n    private volatile KdSharePayload lastLocalShare;\n'''
+          new_fields = '''    private String recentBossId;\n    private int recentBossTick = -1;\n    private final EncounterResolutionWindow encounterResolution =\n        new EncounterResolutionWindow(ENCOUNTER_RESOLUTION_DELAY_TICKS);\n    private String activeEncounterId;\n    private String activeEncounterBossId;\n    private Integer activeEncounterStartingKc;\n    private BossEncounterTracker.Attribution pendingAttribution;\n    private Instant sessionStartedAt;\n    private volatile KdSharePayload lastLocalShare;\n'''
+          if old_fields not in plugin:
+              raise SystemExit('Plugin field block not found')
+          plugin = plugin.replace(old_fields, new_fields, 1)
+
+          old_start = '''        recentBossId = null;\n        recentBossTick = -1;\n        pendingKill = null;\n        lastPlayerDeathTick = -1;\n        lastLocalShare = null;\n'''
+          new_start = '''        recentBossId = null;\n        recentBossTick = -1;\n        resetEncounterResolutionState();\n        sessionStartedAt = Instant.now();\n        lastLocalShare = null;\n'''
+          if old_start not in plugin:
+              raise SystemExit('Startup state block not found')
+          plugin = plugin.replace(old_start, new_start, 1)
+
+          old_shutdown = '''        chatCommandManager.unregisterCommand(KD_COMMAND);\n        encounterTracker.reset();\n        recentBossId = null;\n        recentBossTick = -1;\n        pendingKill = null;\n        lastPlayerDeathTick = -1;\n        lastLocalShare = null;\n'''
+          new_shutdown = '''        chatCommandManager.unregisterCommand(KD_COMMAND);\n        abandonActiveEncounter(\n            EncounterOutcome.DISCONNECTED,\n            "Plugin shutdown");\n        encounterTracker.reset();\n        recentBossId = null;\n        recentBossTick = -1;\n        resetEncounterResolutionState();\n        lastLocalShare = null;\n'''
+          if old_shutdown not in plugin:
+              raise SystemExit('Shutdown state block not found')
+          plugin = plugin.replace(old_shutdown, new_shutdown, 1)
+
+          config_anchor = '''        if (!"killcount".equals(event.getGroup()))\n        {\n            return;\n        }\n\n        BossDeathTrackerStore.HistoricalKillSyncResult result =\n'''
+          config_replacement = '''        if (!"killcount".equals(event.getGroup()))\n        {\n            return;\n        }\n\n        // During an active attempt, a KC increase is authoritative evidence for\n        // the outcome resolver. Do not import that same increment separately.\n        if (confirmKillCountProgress())\n        {\n            return;\n        }\n\n        BossDeathTrackerStore.HistoricalKillSyncResult result =\n'''
+          if config_anchor not in plugin:
+              raise SystemExit('ConfigChanged anchor not found')
+          plugin = plugin.replace(config_anchor, config_replacement, 1)
+
+          tick_old = '''        gameTickCounter++;\n        confirmPendingKill();\n        encounterTracker.onGameTick(gameTickCounter);\n'''
+          tick_new = '''        gameTickCounter++;\n        confirmKillCountProgress();\n        resolvePendingEncounter();\n        encounterTracker.onGameTick(gameTickCounter);\n        closeExpiredEncounterIfNeeded();\n'''
+          if tick_old not in plugin:
+              raise SystemExit('GameTick block not found')
+          plugin = plugin.replace(tick_old, tick_new, 1)
+
+          actor_pattern = re.compile(
+              r'    @Subscribe\n    public void onActorDeath\(ActorDeath event\).*?\n(?=    private boolean handleKdCommandInput)',
+              re.S,
+          )
+          actor_replacement = '''    @Subscribe\n    public void onActorDeath(ActorDeath event)\n    {\n        Player localPlayer = client.getLocalPlayer();\n\n        if (localPlayer == null)\n        {\n            return;\n        }\n\n        if (event.getActor() == localPlayer)\n        {\n            BossEncounterTracker.Attribution attribution =\n                encounterTracker.getDeathAttribution(gameTickCounter)\n                    .orElse(pendingAttribution);\n\n            if (!config.automaticDeaths())\n            {\n                abandonActiveEncounter(\n                    EncounterOutcome.ABANDONED,\n                    "Player died while automatic death tracking was disabled");\n                encounterTracker.reset();\n                syncEncounterToPanel();\n                return;\n            }\n\n            if (attribution != null)\n            {\n                ensureActiveEncounter(attribution);\n                pendingAttribution = attribution;\n                encounterResolution.observePlayerDeath(gameTickCounter);\n            }\n\n            // Keep the attempt pending until KC and NPC-death events have had\n            // time to arrive. This makes event order irrelevant.\n            encounterTracker.reset();\n            syncEncounterToPanel();\n            return;\n        }\n\n        if (!(event.getActor() instanceof NPC)\n            || !config.automaticKills())\n        {\n            return;\n        }\n\n        NPC deadNpc = (NPC) event.getActor();\n        encounterTracker.getKillAttribution(\n            deadNpc,\n            store,\n            gameTickCounter)\n            .ifPresent(attribution ->\n            {\n                ensureActiveEncounter(attribution);\n                pendingAttribution = attribution;\n                encounterResolution.observeBossDeath(gameTickCounter);\n\n                log.debug(\n                    "Observed boss death for {} (NPC ID {}); awaiting confirmation",\n                    attribution.getBossName(),\n                    attribution.getNpcId());\n            });\n    }\n\n    private void resolvePendingEncounter()\n    {\n        if (activeEncounterId == null\n            || !encounterResolution.hasPendingSignals())\n        {\n            return;\n        }\n\n        Player localPlayer = client.getLocalPlayer();\n        boolean playerAlive = localPlayer != null\n            && localPlayer.getHealthRatio() != 0;\n\n        Optional<EncounterOutcome> outcome =\n            encounterResolution.resolve(gameTickCounter, playerAlive);\n\n        if (!outcome.isPresent())\n        {\n            return;\n        }\n\n        String signal = encounterResolution.completionSignal();\n        EncounterOutcome resolved = outcome.get();\n\n        store.completeEncounter(\n            activeEncounterId,\n            resolved,\n            signal,\n            "Resolved after "\n                + ENCOUNTER_RESOLUTION_DELAY_TICKS\n                + " game ticks",\n            config.automaticKills(),\n            config.automaticDeaths());\n\n        log.debug(\n            "Completed encounter {} as {} using {}",\n            activeEncounterId,\n            resolved,\n            signal);\n\n        resetEncounterResolutionState();\n        encounterTracker.reset();\n        syncEncounterToPanel();\n        refreshPanel();\n    }\n\n    private boolean confirmKillCountProgress()\n    {\n        if (!config.automaticKills()\n            || activeEncounterId == null\n            || activeEncounterBossId == null)\n        {\n            return false;\n        }\n\n        BossProfile boss = store.findBoss(activeEncounterBossId)\n            .orElse(null);\n        Integer cachedKc = store.getCachedRuneLiteKillCount(boss);\n\n        if (cachedKc == null)\n        {\n            return false;\n        }\n\n        if (activeEncounterStartingKc == null)\n        {\n            activeEncounterStartingKc = cachedKc;\n            return false;\n        }\n\n        if (cachedKc > activeEncounterStartingKc)\n        {\n            encounterResolution.confirmKillCount(gameTickCounter);\n            return true;\n        }\n\n        return false;\n    }\n\n    private void ensureActiveEncounter(\n        BossEncounterTracker.Attribution attribution)\n    {\n        if (attribution == null)\n        {\n            return;\n        }\n\n        if (activeEncounterId != null\n            && attribution.getBossId().equals(activeEncounterBossId))\n        {\n            pendingAttribution = attribution;\n            return;\n        }\n\n        if (activeEncounterId != null)\n        {\n            store.abandonEncounter(\n                activeEncounterId,\n                EncounterOutcome.ABANDONED,\n                "A different boss encounter became active");\n        }\n\n        encounterResolution.reset();\n        activeEncounterBossId = attribution.getBossId();\n        activeEncounterId = store.beginEncounter(\n            attribution.getBossId(),\n            attribution.getBossName(),\n            attribution.getNpcId(),\n            Instant.now());\n        pendingAttribution = attribution;\n\n        BossProfile boss = store.findBoss(activeEncounterBossId)\n            .orElse(null);\n        activeEncounterStartingKc =\n            store.getCachedRuneLiteKillCount(boss);\n    }\n\n    private void abandonActiveEncounter(\n        EncounterOutcome outcome,\n        String note)\n    {\n        if (activeEncounterId != null)\n        {\n            store.abandonEncounter(\n                activeEncounterId,\n                outcome,\n                note);\n        }\n\n        resetEncounterResolutionState();\n    }\n\n    private void closeExpiredEncounterIfNeeded()\n    {\n        if (activeEncounterId != null\n            && encounterTracker.getActiveBossId() == null\n            && !encounterResolution.hasPendingSignals())\n        {\n            abandonActiveEncounter(\n                EncounterOutcome.ABANDONED,\n                "Encounter timed out without a terminal signal");\n            syncEncounterToPanel();\n            refreshPanel();\n        }\n    }\n\n    private void resetEncounterResolutionState()\n    {\n        encounterResolution.reset();\n        activeEncounterId = null;\n        activeEncounterBossId = null;\n        activeEncounterStartingKc = null;\n        pendingAttribution = null;\n    }\n\n'''
+          plugin, count = actor_pattern.subn(actor_replacement, plugin, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one actor-death region, found {count}')
+
+          sync_anchor = '''        if (activeBossId != null)\n        {\n            recentBossId = activeBossId;\n            recentBossTick = gameTickCounter;\n        }\n'''
+          sync_replacement = '''        if (activeBossId != null)\n        {\n            recentBossId = activeBossId;\n            recentBossTick = gameTickCounter;\n            encounterTracker.getCurrentAttribution(gameTickCounter)\n                .ifPresent(this::ensureActiveEncounter);\n        }\n'''
+          if sync_anchor not in plugin:
+              raise SystemExit('syncEncounterToPanel anchor not found')
+          plugin = plugin.replace(sync_anchor, sync_replacement, 1)
+
+          state_pattern = re.compile(
+              r'    @Subscribe\n    public void onGameStateChanged\(GameStateChanged event\).*?\n    }\n\n(?=    private static final class PendingKill)',
+              re.S,
+          )
+          state_replacement = '''    @Subscribe\n    public void onGameStateChanged(GameStateChanged event)\n    {\n        GameState state = event.getGameState();\n\n        if (state == GameState.LOGGED_IN)\n        {\n            sessionStartedAt = Instant.now();\n            loadCurrentProfileData();\n            return;\n        }\n\n        if (state == GameState.LOGIN_SCREEN\n            || state == GameState.HOPPING\n            || state == GameState.CONNECTION_LOST)\n        {\n            abandonActiveEncounter(\n                EncounterOutcome.DISCONNECTED,\n                "Game state changed to " + state);\n            encounterTracker.reset();\n            recentBossId = null;\n            recentBossTick = -1;\n            lastLocalShare = null;\n            syncEncounterToPanel();\n        }\n    }\n\n'''
+          plugin, count = state_pattern.subn(state_replacement, plugin, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one game-state region, found {count}')
+
+          pending_pattern = re.compile(
+              r'    private static final class PendingKill\n    \{.*?\n    }\n\n(?=    @Provides)',
+              re.S,
+          )
+          plugin, count = pending_pattern.subn('', plugin, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected one PendingKill class, found {count}')
+
+          plugin_path.write_text(plugin, encoding='utf-8')
+          PY
+
+      - name: Remove one-time workflow
+        run: rm .github/workflows/apply-0.10-plugin.yml
+
+      - name: Commit encounter integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/main/java/com/bossdeathtracker/BossEncounterTracker.java src/main/java/com/bossdeathtracker/BossDeathTrackerStore.java src/main/java/com/bossdeathtracker/BossDeathTrackerPlugin.java .github/workflows/apply-0.10-plugin.yml
+          git commit -m "Integrate encounter lifecycle and outcome resolution"
+          git push
