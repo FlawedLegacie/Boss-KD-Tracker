@@ -7,6 +7,7 @@ public class TrackerEvent
 {
     private String id;
     private String encounterId;
+    private String reversesEventId;
     private String bossId;
     private TrackerEventType type;
     private TrackerEventSource source;
@@ -51,6 +52,28 @@ public class TrackerEvent
             amount,
             note,
             Instant.now());
+    }
+
+    static TrackerEvent createUndo(
+        TrackerEvent original,
+        String note)
+    {
+        if (original == null || original.getAmount() <= 0)
+        {
+            throw new IllegalArgumentException(
+                "A positive event is required for undo");
+        }
+
+        TrackerEvent undo = createAt(
+            original.getEncounterId(),
+            original.getBossId(),
+            original.getType(),
+            TrackerEventSource.CORRECTED,
+            -original.getAmount(),
+            note,
+            Instant.now());
+        undo.reversesEventId = original.getId();
+        return undo;
     }
 
     static TrackerEvent createAt(
@@ -100,6 +123,11 @@ public class TrackerEvent
     public String getEncounterId()
     {
         return encounterId;
+    }
+
+    public String getReversesEventId()
+    {
+        return reversesEventId;
     }
 
     public String getBossId()
