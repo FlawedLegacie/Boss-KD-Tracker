@@ -21,6 +21,20 @@ Boss KD Tracker is a RuneLite plugin for tracking boss kills, deaths, K/D ratios
 - Manual boss creation for new or unsupported bosses
 - Quest boss support
 
+## 0.11.1 visual refresh
+
+- Original crowned-skull shield replaces the plain toolbar skull.
+- Twenty-one cached, multi-resolution symbols replace the older PNG/glyph visuals.
+- Crossed swords, skull, trophy, stopwatch, target, flame, history, data, favorite,
+  sync, import/export, and undo controls now have distinct silhouettes.
+- The persistent header reads `v0.11.1 / ICONS 01` on Bosses, History, and Data.
+- The toolbar tooltip also shows the running build identity. This is embedded in
+  the plugin, not inferred from the profile schema or historical data.
+- Summary buttons stack their icon above the label so four controls fit the sidebar.
+- Kill/death logic, chat formatting, and stored character data are unchanged.
+- Build the new code or install the corresponding Plugin Hub update to see it.
+  An old feature/test launcher remains old even if GitHub main has been updated.
+
 ## 0.11.0 interface and data changes
 
 - The side panel is organized into Bosses, History, and Data tabs.

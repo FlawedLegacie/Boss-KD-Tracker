@@ -118,24 +118,32 @@ final class BossDataPanel extends JPanel
         panel.setOpaque(false);
         panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 150));
 
-        JButton exportButton = new JButton("Export Active Profile...");
+        JButton exportButton = new JButton("Export Active Profile...", BossKdIcons.icon(BossKdIcons.Symbol.EXPORT, 16));
         exportButton.addActionListener(event -> exportProfile());
 
-        JButton importButton = new JButton("Import Profile...");
+        JButton importButton = new JButton("Import Profile...", BossKdIcons.icon(BossKdIcons.Symbol.IMPORT, 16));
         importButton.addActionListener(event -> importProfile());
 
         JButton synchronizeButton =
-            new JButton("Synchronize Official Definitions");
+            new JButton("Sync Official Definitions", BossKdIcons.icon(BossKdIcons.Symbol.SYNC, 16));
         synchronizeButton.addActionListener(event -> synchronizeDefinitions());
 
-        JButton undoButton = new JButton("Undo Last Count Record");
+        JButton undoButton = new JButton("Undo Last Count Record", BossKdIcons.icon(BossKdIcons.Symbol.UNDO, 16));
         undoButton.setToolTipText(
             "Append a correction for the newest reversible kill/death record");
         undoButton.addActionListener(event -> undoLastRecord());
 
+        exportButton.setFont(exportButton.getFont().deriveFont(10.5f));
+        exportButton.setMargin(new java.awt.Insets(3, 4, 3, 4));
         panel.add(exportButton);
+        importButton.setFont(importButton.getFont().deriveFont(10.5f));
+        importButton.setMargin(new java.awt.Insets(3, 4, 3, 4));
         panel.add(importButton);
+        synchronizeButton.setFont(synchronizeButton.getFont().deriveFont(10.5f));
+        synchronizeButton.setMargin(new java.awt.Insets(3, 4, 3, 4));
         panel.add(synchronizeButton);
+        undoButton.setFont(undoButton.getFont().deriveFont(10.5f));
+        undoButton.setMargin(new java.awt.Insets(3, 4, 3, 4));
         panel.add(undoButton);
         return panel;
     }

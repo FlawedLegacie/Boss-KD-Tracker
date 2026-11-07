@@ -8,7 +8,6 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
 import java.awt.Insets;
-import java.net.URL;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -72,13 +71,7 @@ public class BossDeathTrackerPanel extends PluginPanel
         }
     }
 
-    private static ImageIcon loadIcon(String name)
-    {
-        URL resource = BossDeathTrackerPanel.class.getResource(
-            "/bosskd/icons/" + name);
 
-        return resource == null ? null : new ImageIcon(resource);
-    }
 
     private static final DateTimeFormatter EVENT_TIME_FORMAT =
         DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a")
@@ -88,16 +81,16 @@ public class BossDeathTrackerPanel extends PluginPanel
     private final BossDeathTrackerConfig config;
     private final ConfigManager configManager;
 
-    private final ImageIcon swordIcon = loadIcon("swords.png");
-    private final ImageIcon skullIcon = loadIcon("skull.png");
-    private final ImageIcon trophyIcon = loadIcon("trophy.png");
-    private final ImageIcon chartIcon = loadIcon("chart.png");
-    private final ImageIcon searchIcon = loadIcon("search.png");
-    private final ImageIcon detailsIcon = loadIcon("details.png");
-    private final ImageIcon checkIcon = loadIcon("check.png");
-    private final ImageIcon syncIcon = loadIcon("sync.png");
-    private final ImageIcon plusIcon = loadIcon("plus.png");
-    private final ImageIcon bookIcon = loadIcon("book.png");
+    private final ImageIcon swordIcon = BossKdIcons.icon(BossKdIcons.Symbol.SWORDS, 16);
+    private final ImageIcon skullIcon = BossKdIcons.icon(BossKdIcons.Symbol.SKULL, 16);
+    private final ImageIcon trophyIcon = BossKdIcons.icon(BossKdIcons.Symbol.TROPHY, 16);
+    private final ImageIcon chartIcon = BossKdIcons.icon(BossKdIcons.Symbol.CHART, 16);
+    private final ImageIcon searchIcon = BossKdIcons.icon(BossKdIcons.Symbol.SEARCH, 16);
+    private final ImageIcon detailsIcon = BossKdIcons.icon(BossKdIcons.Symbol.DETAILS, 16);
+    private final ImageIcon checkIcon = BossKdIcons.icon(BossKdIcons.Symbol.CHECK, 16);
+    private final ImageIcon syncIcon = BossKdIcons.icon(BossKdIcons.Symbol.SYNC, 16);
+    private final ImageIcon plusIcon = BossKdIcons.icon(BossKdIcons.Symbol.PLUS, 16);
+    private final ImageIcon bookIcon = BossKdIcons.icon(BossKdIcons.Symbol.BOOK, 16);
 
     private final JButton currentHeaderButton = new JButton("Current");
     private final JButton sessionHeaderButton = new JButton("Session");
@@ -147,8 +140,6 @@ public class BossDeathTrackerPanel extends PluginPanel
         body.setBackground(ColorScheme.DARK_GRAY_COLOR);
         body.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
-        body.add(buildHeader());
-        body.add(Box.createVerticalStrut(8));
         body.add(buildSummary());
         body.add(Box.createVerticalStrut(8));
         body.add(buildSearch());
@@ -203,9 +194,10 @@ public class BossDeathTrackerPanel extends PluginPanel
         dataPanel = new BossDataPanel(store, this::refresh);
 
         JTabbedPane tabs = new JTabbedPane();
-        tabs.addTab("Bosses", bossesTab);
-        tabs.addTab("History", historyPanel);
-        tabs.addTab("Data", dataPanel);
+        tabs.setFont(tabs.getFont().deriveFont(10.5f));
+        tabs.addTab("Bosses", BossKdIcons.icon(BossKdIcons.Symbol.SWORDS, 14), bossesTab);
+        tabs.addTab("History", BossKdIcons.icon(BossKdIcons.Symbol.HISTORY, 14), historyPanel);
+        tabs.addTab("Data", BossKdIcons.icon(BossKdIcons.Symbol.DATA, 14), dataPanel);
         tabs.addChangeListener(event ->
         {
             if (tabs.getSelectedComponent() == historyPanel)
@@ -218,6 +210,7 @@ public class BossDeathTrackerPanel extends PluginPanel
             }
         });
 
+        add(buildHeader(), BorderLayout.NORTH);
         add(tabs, BorderLayout.CENTER);
         refresh();
     }
@@ -423,19 +416,7 @@ public class BossDeathTrackerPanel extends PluginPanel
 
     private JPanel buildHeader()
     {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBackground(new Color(31, 31, 31));
-        panel.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(
-                0, 0, 1, 0, ColorScheme.MEDIUM_GRAY_COLOR),
-            BorderFactory.createEmptyBorder(10, 10, 10, 10)));
-
-        JLabel title = new JLabel("Boss KD Tracker");
-        title.setForeground(Color.WHITE);
-        title.setFont(title.getFont().deriveFont(Font.BOLD));
-        panel.add(title, BorderLayout.WEST);
-
-        return panel;
+        return BossKdVisuals.createHeader();
     }
 
     private JPanel buildSummary()
@@ -446,7 +427,7 @@ public class BossDeathTrackerPanel extends PluginPanel
 
         JPanel modeButtons = new JPanel(new GridLayout(1, 4, 3, 0));
         modeButtons.setOpaque(false);
-        modeButtons.setMaximumSize(new Dimension(Integer.MAX_VALUE, 32));
+        modeButtons.setMaximumSize(new Dimension(Integer.MAX_VALUE, 49));
 
         configureHeaderButton(currentHeaderButton, HeaderMode.CURRENT);
         configureHeaderButton(sessionHeaderButton, HeaderMode.SESSION);
@@ -481,15 +462,15 @@ public class BossDeathTrackerPanel extends PluginPanel
         summary.add(buildMetricSeparator());
         summary.add(buildInsightRow(chartIcon, "K/D", insightKdValue));
         summary.add(buildMetricSeparator());
-        summary.add(buildInsightRow(detailsIcon, "Attempts", insightAttemptsValue));
+        summary.add(buildInsightRow(BossKdIcons.icon(BossKdIcons.Symbol.TARGET, 16), "Attempts", insightAttemptsValue));
         summary.add(buildMetricSeparator());
-        summary.add(buildInsightRow(trophyIcon, "Win rate", insightWinRateValue));
+        summary.add(buildInsightRow(checkIcon, "Win rate", insightWinRateValue));
         summary.add(buildMetricSeparator());
-        summary.add(buildInsightRow(trophyIcon, "Personal best", insightPbValue));
+        summary.add(buildInsightRow(BossKdIcons.icon(BossKdIcons.Symbol.TIMER, 16), "Personal best", insightPbValue));
         summary.add(buildMetricSeparator());
-        summary.add(buildInsightRow(chartIcon, "Average kill", insightAverageValue));
+        summary.add(buildInsightRow(BossKdIcons.icon(BossKdIcons.Symbol.TIMER, 16), "Average kill", insightAverageValue));
         summary.add(buildMetricSeparator());
-        summary.add(buildInsightRow(swordIcon, "Current streak", insightStreakValue));
+        summary.add(buildInsightRow(BossKdIcons.icon(BossKdIcons.Symbol.FLAME, 16), "Current streak", insightStreakValue));
 
         container.add(modeButtons);
         container.add(Box.createVerticalStrut(6));
@@ -543,10 +524,13 @@ public class BossDeathTrackerPanel extends PluginPanel
         button.setFocusable(false);
         button.setMargin(new Insets(4, 1, 4, 1));
         button.setHorizontalAlignment(SwingConstants.CENTER);
-        button.setIconTextGap(4);
-        button.setMinimumSize(new Dimension(0, 31));
-        button.setPreferredSize(new Dimension(0, 31));
-        button.setMaximumSize(new Dimension(Integer.MAX_VALUE, 31));
+        button.setIconTextGap(2);
+        button.setVerticalTextPosition(SwingConstants.BOTTOM);
+        button.setHorizontalTextPosition(SwingConstants.CENTER);
+        button.setFont(button.getFont().deriveFont(10f));
+        button.setMinimumSize(new Dimension(0, 47));
+        button.setPreferredSize(new Dimension(0, 47));
+        button.setMaximumSize(new Dimension(Integer.MAX_VALUE, 47));
 
         if (mode == HeaderMode.CURRENT)
         {
@@ -555,7 +539,7 @@ public class BossDeathTrackerPanel extends PluginPanel
         }
         else if (mode == HeaderMode.SESSION)
         {
-            button.setIcon(chartIcon);
+            button.setIcon(BossKdIcons.icon(BossKdIcons.Symbol.TIMER, 16));
             button.setToolTipText("Statistics since this login session began");
         }
         else if (mode == HeaderMode.NEMESIS)
@@ -862,7 +846,10 @@ public class BossDeathTrackerPanel extends PluginPanel
         name.setForeground(Color.WHITE);
         name.setFont(name.getFont().deriveFont(Font.BOLD));
 
-        JButton favoriteButton = new JButton(boss.isFavorite() ? "★" : "☆");
+        JButton favoriteButton = new JButton(BossKdIcons.icon(
+            boss.isFavorite() ? BossKdIcons.Symbol.FAVORITE : BossKdIcons.Symbol.FAVORITE_OFF, 16));
+        favoriteButton.getAccessibleContext().setAccessibleName(
+            boss.isFavorite() ? "Remove from favorites" : "Add to favorites");
         favoriteButton.setToolTipText(
             boss.isFavorite() ? "Remove from favorites" : "Add to favorites");
         favoriteButton.setMargin(new Insets(0, 4, 0, 4));
