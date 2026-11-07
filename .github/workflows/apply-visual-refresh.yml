@@ -1,0 +1,50 @@
+name: Apply and verify visual refresh
+
+on:
+  push:
+    branches: [release/0.11.1-visual-refresh]
+    paths: [tools/apply_visual_refresh.py, .github/workflows/apply-visual-refresh.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: release/0.11.1-visual-refresh
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '11'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Apply guarded visual-only changes
+        run: python3 tools/apply_visual_refresh.py
+      - name: Compile and run all regression tests
+        run: gradle clean test jar --no-daemon --stacktrace -Djava.awt.headless=true
+      - name: Commit verified UI changes and remove one-time tooling
+        run: |
+          rm tools/apply_visual_refresh.py .github/workflows/apply-visual-refresh.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src README.md tools/apply_visual_refresh.py .github/workflows/apply-visual-refresh.yml
+          git diff --cached --check
+          git commit -m 'Wire 0.11.1 icons and persistent running-version badge'
+          git push origin HEAD:release/0.11.1-visual-refresh
+          git archive --format=zip --prefix=BossKD-Tracker-0.11.1/ -o build/BossKD-Tracker-0.11.1-source.zip HEAD
+          git rev-parse HEAD > build/verified-commit.txt
+      - name: Upload verified build and test reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: BossKD-0.11.1-visual-refresh
+          path: |
+            build/libs/*.jar
+            build/BossKD-Tracker-0.11.1-source.zip
+            build/verified-commit.txt
+            build/test-results/test/*.xml
+          retention-days: 14
