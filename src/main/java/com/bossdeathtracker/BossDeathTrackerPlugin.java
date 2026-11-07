@@ -1,9 +1,6 @@
 package com.bossdeathtracker;
 
 import com.google.inject.Provides;
-import java.awt.Color;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.time.Instant;
 import java.util.List;
@@ -115,7 +112,7 @@ public class BossDeathTrackerPlugin extends Plugin
         panel.setSessionStartedAt(sessionStartedAt);
 
         navigationButton = NavigationButton.builder()
-            .tooltip("Boss Death Tracker")
+            .tooltip("Boss KD Tracker " + BossKdVisuals.badgeText())
             .icon(createIcon())
             .priority(5)
             .panel(panel)
@@ -910,37 +907,6 @@ public class BossDeathTrackerPlugin extends Plugin
 
     private static BufferedImage createIcon()
     {
-        BufferedImage image =
-            new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
-
-        Graphics2D g = image.createGraphics();
-
-        try
-        {
-            g.setRenderingHint(
-                RenderingHints.KEY_ANTIALIASING,
-                RenderingHints.VALUE_ANTIALIAS_ON);
-
-            g.setColor(new Color(220, 220, 220));
-            g.fillOval(2, 1, 12, 11);
-
-            g.setColor(new Color(45, 45, 45));
-            g.fillOval(5, 5, 2, 2);
-            g.fillOval(9, 5, 2, 2);
-            g.fillRect(7, 8, 2, 2);
-
-            g.setColor(new Color(220, 220, 220));
-            g.fillRect(4, 10, 8, 5);
-
-            g.setColor(new Color(45, 45, 45));
-            g.drawLine(6, 11, 6, 14);
-            g.drawLine(9, 11, 9, 14);
-        }
-        finally
-        {
-            g.dispose();
-        }
-
-        return image;
+        return BossKdIcons.image(BossKdIcons.Symbol.EMBLEM, 16);
     }
 }
